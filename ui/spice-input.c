@@ -26,6 +26,7 @@
 #include "qemu-common.h"
 #include "qemu-spice.h"
 #include "console.h"
+
 /* keyboard bits */
 
 typedef struct QemuSpiceKbd {

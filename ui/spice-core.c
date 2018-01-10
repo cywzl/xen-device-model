@@ -131,6 +131,77 @@ static void watch_remove(SpiceWatch *watch)
 }
 
 #if SPICE_INTERFACE_CORE_MINOR >= 3
+
+typedef struct ChannelList ChannelList;
+struct ChannelList {
+    SpiceChannelEventInfo *info;
+    QTAILQ_ENTRY(ChannelList) link;
+};
+static QTAILQ_HEAD(, ChannelList) channel_list = QTAILQ_HEAD_INITIALIZER(channel_list);
+
+static void channel_list_add(SpiceChannelEventInfo *info)
+{
+    ChannelList *item;
+
+    item = qemu_mallocz(sizeof(*item));
+    item->info = info;
+    QTAILQ_INSERT_TAIL(&channel_list, item, link);
+}
+
+static void channel_list_del(SpiceChannelEventInfo *info)
+{
+    ChannelList *item;
+
+    QTAILQ_FOREACH(item, &channel_list, link) {
+        if (item->info != info) {
+            continue;
+        }
+        QTAILQ_REMOVE(&channel_list, item, link);
+        qemu_free(item);
+        return;
+    }
+}
+
+static void add_addr_info(QDict *dict, struct sockaddr *addr, int len)
+{
+    char host[NI_MAXHOST], port[NI_MAXSERV];
+    const char *family;
+
+    getnameinfo(addr, len, host, sizeof(host), port, sizeof(port),
+                NI_NUMERICHOST | NI_NUMERICSERV);
+    family = inet_strfamily(addr->sa_family);
+
+    qdict_put(dict, "host", qstring_from_str(host));
+    qdict_put(dict, "port", qstring_from_str(port));
+    qdict_put(dict, "family", qstring_from_str(family));
+}
+
+static void add_channel_info(QDict *dict, SpiceChannelEventInfo *info)
+{
+    int tls = info->flags & SPICE_CHANNEL_EVENT_FLAG_TLS;
+
+    qdict_put(dict, "connection-id", qint_from_int(info->connection_id));
+    qdict_put(dict, "channel-type", qint_from_int(info->type));
+    qdict_put(dict, "channel-id", qint_from_int(info->id));
+    qdict_put(dict, "tls", qbool_from_int(tls));
+}
+
+static QList *channel_list_get(void)
+{
+    ChannelList *item;
+    QList *list;
+    QDict *dict;
+
+    list = qlist_new();
+    QTAILQ_FOREACH(item, &channel_list, link) {
+        dict = qdict_new();
+        add_addr_info(dict, &item->info->paddr, item->info->plen);
+        add_channel_info(dict, item->info);
+        qlist_append(list, dict);
+    }
+    return list;
+}
+
 static void channel_event(int event, SpiceChannelEventInfo *info)
 {
     static const int qevent[] = {
@@ -138,38 +209,24 @@ static void channel_event(int event, SpiceChannelEventInfo *info)
         [ SPICE_CHANNEL_EVENT_INITIALIZED  ] = QEVENT_SPICE_INITIALIZED,
         [ SPICE_CHANNEL_EVENT_DISCONNECTED ] = QEVENT_SPICE_DISCONNECTED,
     };
-    char lhost[NI_MAXHOST], lport[NI_MAXSERV];
-    char phost[NI_MAXHOST], pport[NI_MAXSERV];
     QDict *server, *client;
     QObject *data;
 
-    getnameinfo(&info->laddr, info->llen,
-                lhost, sizeof(lhost), lport, sizeof(lport),
-                NI_NUMERICHOST | NI_NUMERICSERV);
-    getnameinfo(&info->paddr, info->plen,
-                phost, sizeof(phost), pport, sizeof(pport),
-                NI_NUMERICHOST | NI_NUMERICSERV);
-    fprintf(stderr, "%s: ev %d, flg %d, id %x, %d:%d, %s:%s <-> %s:%s\n",
-            __FUNCTION__, event, info->flags, info->connection_id,
-            info->type, info->id, lhost, lport, phost, pport);
+    client = qdict_new();
+    add_addr_info(client, &info->paddr, info->plen);
 
     server = qdict_new();
-    qdict_put(server, "host", qstring_from_str(lhost));
-    qdict_put(server, "port", qstring_from_str(lport));
-    qdict_put(server, "family", qstring_from_str(inet_strfamily(info->laddr.sa_family)));
+    add_addr_info(server, &info->laddr, info->llen);
+
     if (event != SPICE_CHANNEL_EVENT_CONNECTED) {
         int tls = info->flags & SPICE_CHANNEL_EVENT_FLAG_TLS;
         qdict_put(server, "auth", qstring_from_str(auth));
-        qdict_put(server, "connection-id", qint_from_int(info->connection_id));
-        qdict_put(server, "channel-type", qint_from_int(info->type));
-        qdict_put(server, "channel-id", qint_from_int(info->id));
-        qdict_put(server, "tls", qbool_from_int(tls));
+        add_channel_info(client, info);
+        channel_list_add(info);
     }
-
-    client = qdict_new();
-    qdict_put(client, "host", qstring_from_str(phost));
-    qdict_put(client, "port", qstring_from_str(pport));
-    qdict_put(client, "family", qstring_from_str(inet_strfamily(info->paddr.sa_family)));
+    if (event == SPICE_CHANNEL_EVENT_DISCONNECTED) {
+        channel_list_del(info);
+    }
 
     data = qobject_from_jsonf("{ 'client': %p, 'server': %p }",
                               QOBJECT(client), QOBJECT(server));

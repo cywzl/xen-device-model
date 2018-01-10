@@ -1,5 +1,10 @@
-CPPFLAGS+= -I$(XEN_ROOT)/tools/libxc
-CPPFLAGS+= -I$(XEN_ROOT)/tools/xenstore
+CPPFLAGS+= -I$(XEN_ROOT)/tools/libs/toollog/include
+CPPFLAGS+= -I$(XEN_ROOT)/tools/libs/evtchn/include
+CPPFLAGS+= -I$(XEN_ROOT)/tools/libs/gnttab/include
+CPPFLAGS+= -DXC_WANT_COMPAT_MAP_FOREIGN_API
+CPPFLAGS+= -DXC_WANT_COMPAT_DEVICEMODEL_API
+CPPFLAGS+= -I$(XEN_ROOT)/tools/libxc/include
+CPPFLAGS+= -I$(XEN_ROOT)/tools/xenstore/include
 CPPFLAGS+= -I$(XEN_ROOT)/tools/include
 
 SSE2 := $(call cc-option,-msse2,)
@@ -17,15 +22,22 @@ endif
 
 CFLAGS += $(CMDLINE_CFLAGS)
 
+LIBS += -ldrm -ldrm_intel
+LIBS += -L$(XEN_ROOT)/tools/libs/evtchn -lxenevtchn
+LIBS += -L$(XEN_ROOT)/tools/libs/gnttab -lxengnttab
 LIBS += -L$(XEN_ROOT)/tools/libxc -lxenctrl -lxenguest
 LIBS += -L$(XEN_ROOT)/tools/xenstore -lxenstore
+LIBS += -Wl,-rpath-link=$(XEN_ROOT)/tools/libs/toollog
+LIBS += -Wl,-rpath-link=$(XEN_ROOT)/tools/libs/call
+LIBS += -Wl,-rpath-link=$(XEN_ROOT)/tools/libs/foreignmemory
+LIBS += -Wl,-rpath-link=$(XEN_ROOT)/tools/libs/devicemodel
 
 LDFLAGS := $(CFLAGS) $(LDFLAGS)
 
 OBJS += piix4acpi.o
 OBJS += xenstore.o
 OBJS += xen_platform.o
-OBJS += crashdump.o
+OBJS += xen_pvdevice.o
 OBJS += xen_machine_fv.o
 OBJS += xen_machine_pv.o
 OBJS += xen_backend.o
@@ -69,7 +81,7 @@ CONFIG_PASSTHROUGH=1
 endif
 
 ifdef CONFIG_PASSTHROUGH
-OBJS+= pass-through.o pt-msi.o pt-graphics.o
+OBJS+= pass-through.o pt-msi.o pt-graphics.o pt-amd-graphics.o
 LIBS += -lpci
 CFLAGS += -DCONFIG_PASSTHROUGH 
 $(info === PCI passthrough capability has been enabled ===)

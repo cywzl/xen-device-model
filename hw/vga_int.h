@@ -80,7 +80,8 @@
 #endif /* !CONFIG_BOCHS_VBE */
 
 #define CH_ATTR_SIZE (160 * 100)
-#define VGA_MAX_HEIGHT 2048
+#define VGA_MAX_HEIGHT 2048 /* must be equal to VNC_MAX_HEIGHT, see 'vnc.c' */
+#define VGA_MAX_WIDTH 2560  /* must be equal to VNC_MAX_WIDTH, see 'vnc.c' */
 
 struct vga_precise_retrace {
     int64_t ticks_per_char;
@@ -109,8 +110,7 @@ typedef void (* vga_update_retrace_info_fn)(struct VGAState *s);
     unsigned long bios_offset;                                          \
     unsigned int bios_size;                                             \
     uint32_t lfb_addr;                                                  \
-    uint32_t lfb_end;                                                   \    
-     /* skylark */                                                       \
+    uint32_t lfb_end;                                                   \
     uint32_t map_addr;                                                  \
     uint32_t map_end;     																							\
     PCIDevice *pci_dev;                                                 \
@@ -198,7 +198,12 @@ static inline int c6_to_8(int v)
 
 void vga_common_init(VGAState *s, uint8_t *vga_ram_base,
                      unsigned long vga_ram_offset, int vga_ram_size);
+void vga_common_init1(VGAState *s, uint8_t *vga_ram_base,
+                     unsigned long vga_ram_offset, int vga_ram_size);		 
 void vga_reset(void *s);
+void vga_reset1(void *opaque);
+void vga_init1(VGAState *s);
+void vga_init2(VGACommonState *s);
 uint32_t vga_mem_readb(void *opaque, target_phys_addr_t addr);
 void vga_mem_writeb(void *opaque, target_phys_addr_t addr, uint32_t val);
 void vga_invalidate_scanlines(VGAState *s, int y1, int y2);
@@ -218,7 +223,6 @@ void vga_draw_cursor_line_32(uint8_t *d1, const uint8_t *src1,
                              unsigned int color_xor);
 
 void *vga_update_vram(VGAState *s, void *vga_ram_base, int vga_ram_size);
-void vga_ioport_write(void *opaque, uint32_t addr, uint32_t val);
 extern const uint8_t sr_mask[8];
 extern const uint8_t gr_mask[16];
 

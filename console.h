@@ -35,21 +35,6 @@ typedef struct QEMUPutMouseEntry {
     /* used internally by qemu for handling mice */
     struct QEMUPutMouseEntry *next;
 } QEMUPutMouseEntry;
-//spice.v21//////////////////////////////////
-/*
-typedef struct QEMUPutMouseEntry {
-    QEMUPutMouseEvent *qemu_put_mouse_event;
-    void *qemu_put_mouse_event_opaque;
-    int qemu_put_mouse_event_absolute;
-    char *qemu_put_mouse_event_name;
-
-    int index;
-
-    // used internally by qemu for handling mice
-    QTAILQ_ENTRY(QEMUPutMouseEntry) node;
-} QEMUPutMouseEntry;
-*/
-//////////////////////////////////////////////
 
 typedef struct QEMUPutLEDEntry {
     QEMUPutLEDEvent *put_led;
@@ -92,10 +77,6 @@ void do_info_mice_print(Monitor *mon, const QObject *data);
 
 void do_info_mice(void);
 void do_mouse_set(int index);
-//spice.v21//////////////////////////////////////////////
-//void do_info_mice(Monitor *mon, QObject **ret_data);
-//void do_mouse_set(Monitor *mon, const QDict *qdict);
-/////////////////////////////////////////////////////////
 
 /* keysym is a unicode code except for special keys (see QEMU_KEY_xxx
    constants) */
@@ -124,6 +105,8 @@ void kbd_put_keysym(int keysym);
 
 /* consoles */
 
+/* in ms */
+#define GUI_REFRESH_INTERVAL 30
 #define QEMU_BIG_ENDIAN_FLAG    0x01
 #define QEMU_ALLOCATED_FLAG     0x02
 #define QEMU_REALPIXELS_FLAG    0x04
@@ -208,20 +191,18 @@ struct DisplayState {
     struct DisplayState *next;
 };
 
-extern struct DisplayAllocator default_allocator;
-DisplayAllocator *register_displayallocator(DisplayState *ds, DisplayAllocator *da);
-DisplaySurface* defaultallocator_create_displaysurface(int width, int height);
-DisplaySurface* defaultallocator_resize_displaysurface(DisplaySurface *surface, int width, int height);
-void defaultallocator_free_displaysurface(DisplaySurface *surface);
-
-//spice.v21//////////////////////////////////////////////////////////////////
 void register_displaystate(DisplayState *ds);
 DisplayState *get_displaystate(void);
 DisplaySurface* qemu_create_displaysurface_from(int width, int height, int bpp,
                                                 int linesize, uint8_t *data);
 PixelFormat qemu_different_endianness_pixelformat(int bpp);
 PixelFormat qemu_default_pixelformat(int bpp);
-//////////////////////////////////////////////////////////////////////////////
+
+extern struct DisplayAllocator default_allocator;
+DisplayAllocator *register_displayallocator(DisplayState *ds, DisplayAllocator *da);
+DisplaySurface* defaultallocator_create_displaysurface(int width, int height);
+DisplaySurface* defaultallocator_resize_displaysurface(DisplaySurface *surface, int width, int height);
+void defaultallocator_free_displaysurface(DisplaySurface *surface);
 
 static inline DisplaySurface* qemu_create_displaysurface(DisplayState *ds, int width, int height)
 {
@@ -369,15 +350,6 @@ static inline void console_write_ch(console_ch_t *dest, uint32_t ch)
 {
     cpu_to_le32wu((uint32_t *) dest, ch);
 }
-//spice.v21
-/*
-static inline void console_write_ch(console_ch_t *dest, uint32_t ch)
-{
-    if (!(ch & 0xff))
-        ch |= ' ';
-    cpu_to_le32wu((uint32_t *) dest, ch);
-}
-*/
 
 typedef void (*vga_hw_update_ptr)(void *);
 typedef void (*vga_hw_invalidate_ptr)(void *);
@@ -397,9 +369,6 @@ void vga_hw_text_update(console_ch_t *chardata);
 int is_graphic_console(void);
 int is_fixedsize_console(void);
 CharDriverState *text_console_init(const char *p);
-//spice.v21
-//CharDriverState *text_console_init(QemuOpts *opts);
-
 void text_consoles_set_display(DisplayState *ds);
 void console_select(unsigned int index);
 void console_unselect(void);
@@ -424,16 +393,10 @@ void cocoa_display_init(DisplayState *ds, int full_screen);
 void vnc_display_init(DisplayState *ds);
 void vnc_display_close(DisplayState *ds);
 int vnc_display_open(DisplayState *ds, const char *display);
-//spice.v21
-//int vnc_display_open(DisplayState *ds, const char *display);
-
 int vnc_display_password(DisplayState *ds, const char *password);
 void do_info_vnc_print(Monitor *mon, const QObject *data);
 
 void do_info_vnc(void);
-//spice.v21
-//void do_info_vnc(Monitor *mon, QObject **ret_data);
-
 char *vnc_display_local_addr(DisplayState *ds);
 void vnc_keymap_change(char *keymap);
 void vnc_dpy_set_clipboard(char *text);

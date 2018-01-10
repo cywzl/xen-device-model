@@ -13,6 +13,7 @@
 #include "exec-all.h"
 
 #include "qemu-timer.h"
+#include "qemu-xen.h"
 
 #pragma pack(1)
 
@@ -52,6 +53,7 @@ static void vgpu_fb_update(void *opaque)
     vgpu_fb_state *s = (vgpu_fb_state *)opaque;
     char buf = 'S';
 
+    s->server.sin_port = htons(s->shared->port);
     sendto(s->surface_fd, &buf, 1, MSG_DONTWAIT, &s->server, sizeof (s->server));
 
     if (s->surface_offset != s->shared->offset ||
@@ -99,6 +101,14 @@ vgpu_fb_init(void)
     int i;
     vgpu_fb_state *s;
     int fd;
+    int defaulted = 0;
+
+    uint64_t address = xenstore_parse_vgpu_address();
+
+    if (address == ~0ULL) {
+        address = SURFACE_RESERVED_ADDRESS;
+        defaulted = 1;
+    }
 
     s = qemu_mallocz(sizeof(vgpu_fb_state));
     if (!s)
@@ -111,13 +121,14 @@ vgpu_fb_init(void)
                                  s);
 
     for (i = 0; i < n; i++)
-        pfn[i] = (SURFACE_RESERVED_ADDRESS >> TARGET_PAGE_BITS) + i;
+        pfn[i] = (address >> TARGET_PAGE_BITS) + i;
 
     s->surface_buffer = xc_map_foreign_pages(xc_handle, domid,
                                              PROT_READ | PROT_WRITE,
                                              pfn, n);
     if (s->surface_buffer == NULL) {
-        fprintf(stderr, "mmap failed\n");
+        fprintf(stderr, "mmap failed. address = 0x%jx %s\n", 
+                        address, defaulted?"(Default)":"");
         exit(1);
     }
 
@@ -137,5 +148,4 @@ vgpu_fb_init(void)
 
     s->server.sin_family = AF_INET;
     s->server.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    s->server.sin_port = htons(s->shared->port);
 }

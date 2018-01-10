@@ -2,6 +2,7 @@
 #define PRIVSEP_H
 
 #include <stdarg.h>
+#include "hw/xen_common.h"
 
 /* privsep.c */
 void privsep_prepare(void);
@@ -50,7 +51,7 @@ char **privsep_read_watch(struct xs_handle *h, unsigned int *num);
 
 int xc_interface_restrict_qemu(xc_interface *xc_handle, int domid);
 #define xc_interface_restrict(h,d) xc_interface_restrict_qemu(h,d)
-int xc_evtchn_restrict(xc_interface *xce_handle, int domid);
+int xc_evtchn_restrict(xenevtchn_handle *xce_handle, int domid);
 
 typedef enum {
     /** not initialized at all, call privsep_prepare */

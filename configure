@@ -848,9 +848,9 @@ fi
 
 ##########################################
 # spice libs
-export PKG_CONFIG_PATH=$PKG_CONFIG_PATH:/usr/local/spice-xen/lib/pkgconfig:/usr/lib/pkgconfig:/usr/local/spice-xen/share/pkgconfig
+export PKG_CONFIG_PATH=$PKG_CONFIG_PATH:/usr/local/spice-xen/lib/pkgconfig:/usr/lib/pkgconfig:/usr/lib64/pkgconfig
 pkgconfig="${cross_prefix}pkg-config"
-if ! has $pkgconfig; then
+if test -z "$pkgconfig"; then
   # likely not cross compiling, or hope for the best
   pkgconfig=pkg-config
 fi
@@ -1537,6 +1537,12 @@ bsd)
 esac
 
 tools=
+if test `expr "$target_list" : ".*softmmu.*"` != 0 ; then
+  tools="qemu-img\$(EXESUF) $tools"
+  if [ "$linux" = "yes" ] ; then
+      tools="qemu-nbd\$(EXESUF) $tools"
+  fi
+fi
 echo "TOOLS=$tools" >> $config_mak
 
 test -f ${config_h}~ && cmp -s $config_h ${config_h}~ && mv ${config_h}~ $config_h

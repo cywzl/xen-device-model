@@ -24,7 +24,7 @@ ifeq ($(TARGET_ARCH), sparc64)
 TARGET_BASE_ARCH:=sparc
 endif
 TARGET_PATH?=$(SRC_PATH)/target-$(TARGET_BASE_ARCH)
-VPATH=$(SRC_PATH):$(TARGET_PATH):$(SRC_PATH)/hw
+VPATH=$(SRC_PATH):$(TARGET_PATH):$(SRC_PATH)/hw:$(SRC_PATH)/hw/intel-tools
 CPPFLAGS=-I. -I.. -I$(TARGET_PATH) -I$(SRC_PATH) -MMD -MT $@ -MP -DNEED_CPU_H
 #CFLAGS+=-Werror
 LIBS=
@@ -117,7 +117,7 @@ CFLAGS+=$(OS_CFLAGS) $(ARCH_CFLAGS)
 LDFLAGS+=$(OS_LDFLAGS) $(ARCH_LDFLAGS)
 
 CPPFLAGS+=-D_GNU_SOURCE -D_FILE_OFFSET_BITS=64 -D_LARGEFILE_SOURCE
-LIBS+=-lm
+LIBS+=-lm -ldl
 ifdef CONFIG_WIN32
 LIBS+=-lwinmm -lws2_32 -liphlpapi
 endif
@@ -586,13 +586,15 @@ ifdef CONFIG_AUDIO
 OBJS+= $(SOUND_HW) pcspk.o
 CPPFLAGS += -DHAS_AUDIO -DHAS_AUDIO_CHOICE
 endif
+CPPFLAGS += -I/usr/include/libdrm
 OBJS+= ide.o pckbd.o ps2.o vga.o vgpu_fb.o dma.o
 OBJS+= fdc.o mc146818rtc.o serial.o i8259.o i8254.o pc.o
 OBJS+= cirrus_vga.o apic.o parallel.o acpi.o piix_pci.o
 OBJS+= usb-uhci.o vmmouse.o vmport.o vmware_vga.o hpet.o
-OBJS += device-hotplug.o pci-hotplug.o
+OBJS += device-hotplug.o pci-hotplug.o vga-xengt.o
+OBJS += intel_batchbuffer.o  intel_chipset.o
 # spice qxl device
-ifeq ($(CONFIG_SPICE), y)
+ifdef CONFIG_SPICE
 CFLAGS += -I/usr/include/spice-1
 CFLAGS += -I/usr/include/spice-server
 OBJS += qxl.o

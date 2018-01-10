@@ -118,6 +118,12 @@ static void qxl_reset_memslots(PCIQXLDevice *d);
 static void qxl_reset_surfaces(PCIQXLDevice *d);
 static void qxl_ring_set_dirty(PCIQXLDevice *qxl);
 
+static void vbe_update_vgaregs(VGAState *s);
+
+static inline bool vbe_enabled(VGAState *s)
+{
+    return s->vbe_regs[VBE_DISPI_INDEX_ENABLE] & VBE_DISPI_ENABLED;
+}
 
 static inline uint32_t msb_mask(uint32_t val)
 {
@@ -143,7 +149,7 @@ static ram_addr_t qxl_rom_size(void)
 static void init_qxl_rom(PCIQXLDevice *d)
 {
     //QXLRom *rom = qemu_get_ram_ptr(d->rom_offset);
-    QXLRom *rom = d->rom_offset;
+    QXLRom *rom = (QXLRom *)(d->rom_offset);
     QXLModes *modes = (QXLModes *)(rom + 1);
     uint32_t ram_header_size;
     uint32_t surface0_area_size;
@@ -219,6 +225,186 @@ static void init_qxl_ram(PCIQXLDevice *d)
     qxl_ring_set_dirty(d);
 }
 
+/* we initialize the VGA graphic mode */
+static void vbe_update_vgaregs(VGAState *s)
+{
+    int h, shift_control;
+
+    if (!vbe_enabled(s)) {
+        /* vbe is turned off -- nothing to do */
+        return;
+    }
+
+    /* graphic mode + memory map 1 */
+    s->gr[0x06] = (s->gr[0x06] & ~0x0c) | 0x05;
+    s->cr[0x17] |= 3; /* no CGA modes */
+    s->cr[0x13] = s->vbe_line_offset >> 3;
+    /* width */
+    s->cr[0x01] = (s->vbe_regs[VBE_DISPI_INDEX_XRES] >> 3) - 1;
+    /* height (only meaningful if < 1024) */
+    h = s->vbe_regs[VBE_DISPI_INDEX_YRES] - 1;
+    s->cr[0x12] = h;
+    s->cr[0x07] = (s->cr[0x07] & ~0x42) |
+        ((h >> 7) & 0x02) | ((h >> 3) & 0x40);
+    /* line compare to 1023 */
+    s->cr[0x18] = 0xff;
+    s->cr[0x07] |= 0x10;
+    s->cr[0x09] |= 0x40;
+
+    if (s->vbe_regs[VBE_DISPI_INDEX_BPP] == 4) {
+        shift_control = 0;
+        s->sr[0x01] &= ~8; /* no double line */
+    } else {
+        shift_control = 2;
+        /* set chain 4 mode */
+        s->sr[4] |= 0x08;
+        /* activate all planes */
+        s->sr[2] |= 0x0f;
+    }
+    s->gr[0x05] = (s->gr[0x05] & ~0x60) | (shift_control << 5);
+    s->cr[0x09] &= ~0x9f; /* no double scan */
+}
+
+static void vga_ioport_write(void *opaque, uint32_t addr, uint32_t val)
+{
+    VGAState *s = opaque;
+    int index;
+
+    /* check port range access depending on color/monochrome mode */
+    if ((addr >= 0x3b0 && addr <= 0x3bf && (s->msr & MSR_COLOR_EMULATION)) ||
+        (addr >= 0x3d0 && addr <= 0x3df && !(s->msr & MSR_COLOR_EMULATION)))
+        return;
+
+#ifdef DEBUG_VGA
+    printf("VGA: write addr=0x%04x data=0x%02x\n", addr, val);
+#endif
+
+    switch(addr) {
+    case 0x3c0:
+        if (s->ar_flip_flop == 0) {
+            val &= 0x3f;
+            s->ar_index = val;
+        } else {
+            index = s->ar_index & 0x1f;
+            switch(index) {
+            case 0x00 ... 0x0f:
+                s->ar[index] = val & 0x3f;
+                break;
+            case 0x10:
+                s->ar[index] = val & ~0x10;
+                break;
+            case 0x11:
+                s->ar[index] = val;
+                break;
+            case 0x12:
+                s->ar[index] = val & ~0xc0;
+                break;
+            case 0x13:
+                s->ar[index] = val & ~0xf0;
+                break;
+            case 0x14:
+                s->ar[index] = val & ~0xf0;
+                break;
+            default:
+                break;
+            }
+        }
+        s->ar_flip_flop ^= 1;
+        break;
+    case 0x3c2:
+        s->msr = val & ~0x10;
+        s->update_retrace_info(s);
+        break;
+    case 0x3c4:
+        s->sr_index = val & 7;
+        break;
+    case 0x3c5:
+#ifdef DEBUG_VGA_REG
+        printf("vga: write SR%x = 0x%02x\n", s->sr_index, val);
+#endif
+        s->sr[s->sr_index] = val & sr_mask[s->sr_index];
+        vbe_update_vgaregs(s);
+        if (s->sr_index == 1) s->update_retrace_info(s);
+        break;
+    case 0x3c7:
+        s->dac_read_index = val;
+        s->dac_sub_index = 0;
+        s->dac_state = 3;
+        break;
+    case 0x3c8:
+        s->dac_write_index = val;
+        s->dac_sub_index = 0;
+        s->dac_state = 0;
+        break;
+    case 0x3c9:
+        s->dac_cache[s->dac_sub_index] = val;
+        if (++s->dac_sub_index == 3) {
+            memcpy(&s->palette[s->dac_write_index * 3], s->dac_cache, 3);
+            s->dac_sub_index = 0;
+            s->dac_write_index++;
+        }
+        break;
+    case 0x3ce:
+        s->gr_index = val & 0x0f;
+        break;
+    case 0x3cf:
+#ifdef DEBUG_VGA_REG
+        printf("vga: write GR%x = 0x%02x\n", s->gr_index, val);
+#endif
+        s->gr[s->gr_index] = val & gr_mask[s->gr_index];
+        vbe_update_vgaregs(s);
+        break;
+    case 0x3b4:
+    case 0x3d4:
+        s->cr_index = val;
+        break;
+    case 0x3b5:
+    case 0x3d5:
+#ifdef DEBUG_VGA_REG
+        printf("vga: write CR%x = 0x%02x\n", s->cr_index, val);
+#endif
+        /* handle CR0-7 protection */
+        if ((s->cr[0x11] & 0x80) && s->cr_index <= 7) {
+            /* can always write bit 4 of CR7 */
+            if (s->cr_index == 7) {
+                s->cr[7] = (s->cr[7] & ~0x10) | (val & 0x10);
+                vbe_update_vgaregs(s);
+            }
+            return;
+        }
+        switch(s->cr_index) {
+        case 0x01: /* horizontal display end */
+        case 0x07:
+        case 0x09:
+        case 0x0c:
+        case 0x0d:
+        case 0x12: /* vertical display end */
+            s->cr[s->cr_index] = val;
+            break;
+        default:
+            s->cr[s->cr_index] = val;
+            break;
+        }
+        vbe_update_vgaregs(s);
+
+        switch(s->cr_index) {
+        case 0x00:
+        case 0x04:
+        case 0x05:
+        case 0x06:
+        case 0x07:
+        case 0x11:
+        case 0x17:
+            s->update_retrace_info(s);
+            break;
+        }
+        break;
+    case 0x3ba:
+    case 0x3da:
+        s->fcr = val & 0x10;
+        break;
+    }
+}
 
 /* can be called from spice server thread context */
 static void qxl_set_dirty(ram_addr_t addr, ram_addr_t end)
@@ -1046,7 +1232,7 @@ static void qxl_map(PCIDevice *pci, int region_num,
         [ QXL_VRAM_RANGE_INDEX ] = "vram",
     };
     PCIQXLDevice *qxl = DO_UPCAST(PCIQXLDevice, pci, pci);
-    dprint(qxl, 1, "%s: bar %d [%s] addr 0x%lx size 0x%lx\n", __FUNCTION__,
+    dprint(qxl, 1, "%s: bar %d [%s] addr 0x%x size 0x%x\n", __FUNCTION__,
             region_num, names[region_num], addr, size);
     switch (region_num) {
     case QXL_IO_RANGE_INDEX:
@@ -1482,7 +1668,7 @@ int qxl_init(PCIBus *bus, uint8_t *vga_ram_base, unsigned long vga_ram_offset,
 
     qxl->rom_size = qxl_rom_size();
     //qxl->rom_offset = qemu_ram_alloc(&qxl->pci.qdev, "qxl.vrom", qxl->rom_size);
-    qxl->rom_offset = qemu_vmalloc(qxl->rom_size);
+    qxl->rom_offset = (uint64_t)qemu_vmalloc(qxl->rom_size);
     init_qxl_rom(qxl);
     init_qxl_ram(qxl);
 
@@ -1497,7 +1683,7 @@ int qxl_init(PCIBus *bus, uint8_t *vga_ram_base, unsigned long vga_ram_offset,
     }
     qxl->vram_size = msb_mask(qxl->vram_size * 2 - 1);
     //qxl->vram_offset = qemu_ram_alloc(&qxl->pci.qdev, "qxl.vram", qxl->vram_size);
-    qxl->vram_offset = qemu_vmalloc(qxl->vram_size);
+    qxl->vram_offset = (uint64_t)qemu_vmalloc(qxl->vram_size);
 
     io_size = msb_mask(QXL_IO_RANGE_SIZE * 2 - 1);
     if (qxl->revision == 1) {

@@ -266,7 +266,7 @@ err:
 
 static void ioreq_unmap(struct ioreq *ioreq)
 {
-    xc_gnttab *gnt = ioreq->blkdev->xendev.gnttabdev;
+    xengnttab_handle *gnt = ioreq->blkdev->xendev.gnttabdev;
     int i;
 
     if (ioreq->v.niov == 0)
@@ -274,8 +274,8 @@ static void ioreq_unmap(struct ioreq *ioreq)
     if (batch_maps) {
 	if (!ioreq->pages)
 	    return;
-	if (xc_gnttab_munmap(gnt, ioreq->pages, ioreq->v.niov) != 0)
-	    xen_be_printf(&ioreq->blkdev->xendev, 0, "xc_gnttab_munmap failed: %s\n",
+	if (xengnttab_unmap(gnt, ioreq->pages, ioreq->v.niov) != 0)
+	    xen_be_printf(&ioreq->blkdev->xendev, 0, "xengnttab_unmap failed: %s\n",
 			  strerror(errno));
 	ioreq->blkdev->cnt_map -= ioreq->v.niov;
 	ioreq->pages = NULL;
@@ -283,8 +283,8 @@ static void ioreq_unmap(struct ioreq *ioreq)
 	for (i = 0; i < ioreq->v.niov; i++) {
 	    if (!ioreq->page[i])
 		continue;
-	    if (xc_gnttab_munmap(gnt, ioreq->page[i], 1) != 0)
-		xen_be_printf(&ioreq->blkdev->xendev, 0, "xc_gnttab_munmap failed: %s\n",
+	    if (xengnttab_unmap(gnt, ioreq->page[i], 1) != 0)
+		xen_be_printf(&ioreq->blkdev->xendev, 0, "xengnttab_unmap failed: %s\n",
 			      strerror(errno));
 	    ioreq->blkdev->cnt_map--;
 	    ioreq->page[i] = NULL;
@@ -294,13 +294,13 @@ static void ioreq_unmap(struct ioreq *ioreq)
 
 static int ioreq_map(struct ioreq *ioreq)
 {
-    xc_gnttab *gnt = ioreq->blkdev->xendev.gnttabdev;
+    xengnttab_handle *gnt = ioreq->blkdev->xendev.gnttabdev;
     int i;
 
     if (ioreq->v.niov == 0)
         return 0;
     if (batch_maps) {
-	ioreq->pages = xc_gnttab_map_grant_refs
+	ioreq->pages = xengnttab_map_grant_refs
 	    (gnt, ioreq->v.niov, ioreq->domids, ioreq->refs, ioreq->prot);
 	if (ioreq->pages == NULL) {
 	    xen_be_printf(&ioreq->blkdev->xendev, 0,
@@ -314,7 +314,7 @@ static int ioreq_map(struct ioreq *ioreq)
 	ioreq->blkdev->cnt_map += ioreq->v.niov;
     } else  {
 	for (i = 0; i < ioreq->v.niov; i++) {
-	    ioreq->page[i] = xc_gnttab_map_grant_ref
+	    ioreq->page[i] = xengnttab_map_grant_ref
 		(gnt, ioreq->domids[i], ioreq->refs[i], ioreq->prot);
 	    if (ioreq->page[i] == NULL) {
 		xen_be_printf(&ioreq->blkdev->xendev, 0,
@@ -611,9 +611,9 @@ static void blk_alloc(struct XenDevice *xendev)
     blkdev->bh = qemu_bh_new(blk_bh, blkdev);
     if (xen_mode != XEN_EMULATE)
         batch_maps = 1;
-    if (xc_gnttab_set_max_grants(xendev->gnttabdev,
+    if (xengnttab_set_max_grants(xendev->gnttabdev,
             MAX_GRANTS(max_requests, BLKIF_MAX_SEGMENTS_PER_REQUEST)) < 0) {
-        xen_be_printf(xendev, 0, "xc_gnttab_set_max_grants failed: %s\n",
+        xen_be_printf(xendev, 0, "xengnttab_set_max_grants failed: %s\n",
                       strerror(errno));
     }
 }
@@ -734,7 +734,7 @@ static int blk_connect(struct XenDevice *xendev)
             blkdev->protocol = BLKIF_PROTOCOL_X86_64;
     }
 
-    blkdev->sring = xc_gnttab_map_grant_ref(blkdev->xendev.gnttabdev,
+    blkdev->sring = xengnttab_map_grant_ref(blkdev->xendev.gnttabdev,
 					    blkdev->xendev.dom,
 					    blkdev->ring_ref,
 					    PROT_READ | PROT_WRITE);
@@ -787,7 +787,7 @@ static void blk_disconnect(struct XenDevice *xendev)
     xen_be_unbind_evtchn(&blkdev->xendev);
 
     if (blkdev->sring) {
-	xc_gnttab_munmap(blkdev->xendev.gnttabdev, blkdev->sring, 1);
+	xengnttab_unmap(blkdev->xendev.gnttabdev, blkdev->sring, 1);
 	blkdev->cnt_map--;
 	blkdev->sring = NULL;
     }

@@ -48,7 +48,4 @@ extern unsigned int xen_logdirty_enable;
 #undef HAVE_IOVEC
 #endif
 
-#undef DEFAULT_NETWORK_SCRIPT
-#undef DEFAULT_NETWORK_DOWN_SCRIPT
-
 #endif /*XEN_CONFIG_HOST_H*/

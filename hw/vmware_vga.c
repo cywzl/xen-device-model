@@ -383,6 +383,7 @@ static inline void vmsvga_copy_rect(struct vmsvga_state_s *s,
 
 # ifdef DIRECT_VRAM
     if (s->ds->dpy_copy)
+#  error This configuration is not supported.  See XSA-211.
         qemu_console_copy(s->ds, x0, y0, x1, y1, w, h);
     else
 # endif

@@ -16,6 +16,34 @@ extern int igd_passthru;
 
 static uint32_t igd_guest_opregion = 0;
 
+static int wrapped_xc_domain_memory_mapping(
+    xc_interface *xch, uint32_t domid, unsigned long first_gfn,
+    unsigned long first_mfn, unsigned long nr_mfns, uint32_t add_mapping)
+{
+    int rc;
+
+    if ( add_mapping )
+    {
+        rc = xc_domain_iomem_permission(xch, domid, first_mfn, nr_mfns, add_mapping);
+        if ( rc )
+            return rc;
+    }
+
+    rc = xc_domain_memory_mapping(xch, domid, first_gfn, first_mfn, nr_mfns, add_mapping);
+
+    if ( !add_mapping )
+    {
+        rc = xc_domain_iomem_permission(xch, domid, first_mfn, nr_mfns, add_mapping);
+        if ( rc )
+            return rc;
+    }
+
+    return rc;
+}
+
+#define xc_domain_memory_mapping wrapped_xc_domain_memory_mapping
+
+
 static int pch_map_irq(PCIDevice *pci_dev, int irq_num)
 {
     PT_LOG("pch_map_irq called\n");
@@ -81,7 +109,7 @@ void igd_write_opregion(struct pt_dev *real_dev, uint32_t val)
     ret = xc_domain_memory_mapping(xc_handle, domid,
             igd_guest_opregion >> XC_PAGE_SHIFT,
             host_opregion >> XC_PAGE_SHIFT,
-            2,
+            3,
             DPCI_ADD_MAPPING);
 
     if ( ret != 0 )
@@ -150,8 +178,8 @@ uint32_t igd_pci_read(PCIDevice *pci_dev, uint32_t config_addr, int len)
         case 0xa0:        /* top of memory */
         case 0xb0:        /* ILK: BSM: should read from dev 2 offset 0x5c */
         case 0x58:        /* SNB: PAVPC Offset */
-        case 0xa4:        /* SNB: graphics base of stolen memory */
-        case 0xa8:        /* SNB: base of GTT stolen memory */
+        case 0xb4:        /* SNB: graphics base of stolen memory */
+        case 0xb8:        /* SNB: base of GTT stolen memory */
             break;
         default:
             goto read_default;
@@ -176,31 +204,26 @@ read_default:
    return pci_default_read_config(pci_dev, config_addr, len);
 }
 
+extern int register_amd_vf_region (struct pt_dev *real_device);
+extern int unregister_amd_vf_region(struct pt_dev *real_device);
+
 /*
  * register VGA resources for the domain with assigned gfx
  */
 int register_vga_regions(struct pt_dev *real_device)
 {
-    u16 vendor_id;
+    u32 vendor_id;
     int ret = 0;
 
-    if ( !gfx_passthru || real_device->pci_dev->device_class != 0x0300 )
-        return ret;
-
-    ret |= xc_domain_ioport_mapping(xc_handle, domid, 0x3B0,
-            0x3B0, 0xC, DPCI_ADD_MAPPING);
-
-    ret |= xc_domain_ioport_mapping(xc_handle, domid, 0x3C0,
-            0x3C0, 0x20, DPCI_ADD_MAPPING);
-
-    ret |= xc_domain_memory_mapping(xc_handle, domid,
-            0xa0000 >> XC_PAGE_SHIFT,
-            0xa0000 >> XC_PAGE_SHIFT,
-            0x20,
-            DPCI_ADD_MAPPING);
-
-    if ( ret != 0 )
-        PT_LOG("VGA region mapping failed\n");
+    vendor_id = real_device->pci_dev->vendor_id;
+        
+    PT_LOG ("vendor_id = 0x%04x, device_class = 0x%04x, virtfn = %d\n", vendor_id, real_device->pci_dev->device_class, real_device->is_virtfn);
+    if ((vendor_id == PCI_VENDOR_ID_ATI || vendor_id == PCI_VENDOR_ID_AMD) &&
+         real_device->pci_dev->device_class == 0x0300 &&
+         real_device->is_virtfn)
+    {
+	return register_amd_vf_region (real_device);
+    }
 
     return ret;
 }
@@ -216,26 +239,24 @@ int unregister_vga_regions(struct pt_dev *real_device)
     if ( !gfx_passthru || real_device->pci_dev->device_class != 0x0300 )
         return ret;
 
-    ret |= xc_domain_ioport_mapping(xc_handle, domid, 0x3B0,
-            0x3B0, 0xC, DPCI_REMOVE_MAPPING);
-
-    ret |= xc_domain_ioport_mapping(xc_handle, domid, 0x3C0,
-            0x3C0, 0x20, DPCI_REMOVE_MAPPING);
-
-    ret |= xc_domain_memory_mapping(xc_handle, domid,
-            0xa0000 >> XC_PAGE_SHIFT,
-            0xa0000 >> XC_PAGE_SHIFT,
-            20,
-            DPCI_REMOVE_MAPPING);
-
     vendor_id = pt_pci_host_read(real_device->pci_dev, PCI_VENDOR_ID, 2);
+
+    PT_LOG ("vendor_id = 0x%04x, device_class = 0x%04x, virtfn = %d\n", vendor_id, real_device->pci_dev->device_class, real_device->is_virtfn);
+    
     if ( (vendor_id == PCI_VENDOR_ID_INTEL) && igd_guest_opregion )
     {
         ret |= xc_domain_memory_mapping(xc_handle, domid,
                 igd_guest_opregion >> XC_PAGE_SHIFT,
                 igd_guest_opregion >> XC_PAGE_SHIFT,
-                2,
+                3,
                 DPCI_REMOVE_MAPPING);
+    }
+
+    if ((vendor_id == PCI_VENDOR_ID_ATI || vendor_id == PCI_VENDOR_ID_AMD) &&
+         real_device->pci_dev->device_class == 0x0300 &&
+         real_device->is_virtfn)
+    {
+	return unregister_amd_vf_region (real_device);
     }
 
     if ( ret != 0 )
@@ -244,90 +265,14 @@ int unregister_vga_regions(struct pt_dev *real_device)
     return ret;
 }
 
-static int get_vgabios(unsigned char *buf)
-{
-    int fd;
-    uint32_t bios_size = 0;
-    uint32_t start = 0xC0000;
-    uint16_t magic = 0;
-
-    if ( (fd = open("/dev/mem", O_RDONLY)) < 0 )
-    {
-        PT_LOG("Error: Can't open /dev/mem: %s\n", strerror(errno));
-        return 0;
-    }
-
-    /*
-     * Check if it a real bios extension.
-     * The magic number is 0xAA55.
-     */
-    if ( start != lseek(fd, start, SEEK_SET) )
-        goto out;
-    if ( read(fd, &magic, 2) != 2 )
-        goto out;
-    if ( magic != 0xAA55 )
-        goto out;
-
-    /* Find the size of the rom extension */
-    if ( start != lseek(fd, start, SEEK_SET) )
-        goto out;
-    if ( lseek(fd, 2, SEEK_CUR) != (start + 2) )
-        goto out;
-    if ( read(fd, &bios_size, 1) != 1 )
-        goto out;
-
-    /* This size is in 512 bytes */
-    bios_size *= 512;
-
-    /*
-     * Set the file to the begining of the rombios,
-     * to start the copy.
-     */
-    if ( start != lseek(fd, start, SEEK_SET) )
-        goto out;
-
-    if ( bios_size != read(fd, buf, bios_size))
-        bios_size = 0;
-
-out:
-    close(fd);
-    return bios_size;
-}
-
 int setup_vga_pt(struct pt_dev *real_device)
 {
-    unsigned char *bios = NULL;
-    int bios_size = 0;
-    char *c = NULL;
-    char checksum = 0;
     int rc = 0;
 
     if ( !gfx_passthru || real_device->pci_dev->device_class != 0x0300 )
         return rc;
 
-    /* Allocated 64K for the vga bios */
-    if ( !(bios = malloc(64 * 1024)) )
-        return -1;
+    real_device->dev.config[0xa] = 0x80;
 
-    bios_size = get_vgabios(bios);
-    if ( bios_size == 0 || bios_size > 64 * 1024)
-    {
-        PT_LOG("vga bios size (0x%x) is invalid!\n", bios_size);
-        rc = -1;
-        goto out;
-    }
-
-    /* Adjust the bios checksum */
-    for ( c = (char*)bios; c < ((char*)bios + bios_size); c++ )
-        checksum += *c;
-    if ( checksum )
-    {
-        bios[bios_size - 1] -= checksum;
-        PT_LOG("vga bios checksum is adjusted!\n");
-    }
-
-    cpu_physical_memory_rw(0xc0000, bios, bios_size, 1);
-out:
-    free(bios);
     return rc;
 }

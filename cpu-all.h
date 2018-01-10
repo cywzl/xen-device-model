@@ -862,6 +862,11 @@ extern int phys_ram_fd;
 extern uint8_t *phys_ram_base;
 extern uint8_t *phys_ram_dirty;
 extern ram_addr_t ram_size;
+extern int vgt_low_gm_sz;
+extern int vgt_high_gm_sz;
+extern int vgt_fence_sz;
+extern int vgt_cap;
+extern const char *vgt_monitor_config_file;
 
 /* physical memory access */
 

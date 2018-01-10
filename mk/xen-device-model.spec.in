@@ -7,7 +7,9 @@ Group: System/Hypervisor
 Source0: xen-device-model-%{version}.tar.bz2
 Patch0: xen-device-model-development.patch
 BuildRoot: %{_tmppath}/%{name}-%{version}-%{release}-buildroot
-BuildRequires: SDL-devel, zlib-devel, xen-devel, xen-dom0-devel, ncurses-devel, pciutils-devel, check-devel
+BuildRequires: zlib-devel, xen-libs-devel, xen-dom0-libs-devel, pciutils-devel, libpciaccess-devel, check-devel
+Requires(pre): shadow-utils
+Requires: libdrm
 Provides: qemu-xen(syslog) = 1
 
 %description
@@ -18,24 +20,42 @@ This package contains qemu-dm, the Xen device model.
 
 %build
 ./xen-setup --disable-opengl --disable-vnc-tls --disable-blobs --disable-sdl --enable-werror
-%{__make} CONFIG_BLKTAP1=n
+%{?cov_wrap} %{__make}
 %{__make} unittests
 
 %install
 rm -rf $RPM_BUILD_ROOT
-%{__make} install DESTDIR=$RPM_BUILD_ROOT CONFIG_BLKTAP1=n
+%{?cov_wrap} %{__make} install DESTDIR=$RPM_BUILD_ROOT
 mkdir -p $RPM_BUILD_ROOT/var/xen/qemu
-rm -f $RPM_BUILD_ROOT/usr/bin/qemu-img-xen
-rm -f $RPM_BUILD_ROOT/etc/xen/qemu-ifup
+
+# CA-157601 - Leave Qemu where xenops expects to find it until qemu-dm-wrapper can be fixed
+mkdir -p $RPM_BUILD_ROOT%{_libdir}/xen/bin/
+ln $RPM_BUILD_ROOT%{_libexecdir}/xen/bin/qemu-dm $RPM_BUILD_ROOT%{_libdir}/xen/bin/qemu-dm
 
 %clean
 rm -rf $RPM_BUILD_ROOT
 
+%pre
+/usr/bin/getent passwd qemu >/dev/null 2>&1 || /usr/sbin/useradd \
+    -M -U -r \
+    -s /sbin/nologin \
+    -d / \
+    qemu >/dev/null 2>&1 || :
+/usr/bin/getent passwd qemu_base >/dev/null 2>&1 || /usr/sbin/useradd \
+    -M -U -r \
+    -s /sbin/nologin \
+    -d / \
+    -u 65535 \
+    qemu_base >/dev/null 2>&1 || :
+
 %files
 %defattr(-,root,root,-)
 %doc
+%{_libexecdir}/xen/bin/qemu-dm
+# CA-157601 - Leave Qemu where xenops expects to find it until qemu-dm-wrapper can be fixed
 %{_libdir}/xen/bin/qemu-dm
 %{_datadir}/xen/qemu/keymaps
+%exclude /etc/xen/scripts/qemu-ifup
 %dir /var/xen/qemu
 
 %changelog

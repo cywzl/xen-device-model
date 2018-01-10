@@ -24,7 +24,6 @@
 #include "qemu-xen.h"
 #include "xen_backend.h"
 #include "console.h"
-#include "xen_backend.h"
 #include "privsep.h"
 
 /* The token used to identify the keymap watch. */
@@ -145,6 +144,7 @@ int xenstore_watch_new_callback(const char          *path,
 }
 
 
+static int pasprintf(char **buf, const char *fmt, ...) __attribute__((format (__printf__, 2, 3)));
 static int pasprintf(char **buf, const char *fmt, ...)
 {
     va_list ap;
@@ -154,7 +154,7 @@ static int pasprintf(char **buf, const char *fmt, ...)
         free(*buf);
     va_start(ap, fmt);
     if (vasprintf(buf, fmt, ap) == -1) {
-        buf = NULL;
+        *buf = NULL;
         ret = -1;
     }
     va_end(ap);
@@ -346,7 +346,7 @@ static void xenstore_get_backend_path(char **backend, const char *devtype,
          *expected_devtype;
          expected_devtype++) {
     
-        if (pasprintf(&expected_backend, "%s/backend/%s/%lu/%s",
+        if (pasprintf(&expected_backend, "%s/backend/%s/%u/%s",
                       backend_dompath, *expected_devtype,
                       frontend_domid, inst_danger)
             == -1) goto out;
@@ -837,15 +837,13 @@ void xenstore_parse_domain_config(int hvm_domid)
 
 
     /* Set a watch for log-dirty commands from the migration tools */
-    if (pasprintf(&buf, "/local/domain/0/device-model/%u/logdirty/cmd",
-                  domid) != -1) {
+    if (pasprintf(&buf, "device-model/%u/logdirty/cmd", domid) != -1) {
         xs_watch(xsh, buf, "logdirty");
         fprintf(logfile, "Watching %s\n", buf);
     }
 
     /* Set a watch for suspend requests from the migration tools */
-    if (pasprintf(&buf, 
-                  "/local/domain/0/device-model/%u/command", domid) != -1) {
+    if (pasprintf(&buf, "device-model/%u/command", domid) != -1) {
         xs_watch(xsh, buf, "dm-command");
         fprintf(logfile, "Watching %s\n", buf);
     }
@@ -897,6 +895,27 @@ void xenstore_parse_domain_config(int hvm_domid)
     free(target_domids);
     free(drv);
     return;
+}
+
+uint64_t xenstore_parse_vgpu_address()
+{
+    char *params = NULL, *buf = NULL;
+    uint64_t address = ~0ULL;
+    unsigned int len;
+
+    if (pasprintf(&buf, "/local/domain/%u/vm-data/vram",domid) == -1) {
+        goto out;
+    }
+
+    params = xs_read(xsh, XBT_NULL, buf, &len);
+    if (params != NULL) {
+        address = strtoull(params, NULL, 16);
+    }
+
+ out:
+    free(buf);
+    free(params);
+    return address;
 }
 
 int xenstore_parse_disable_pf_config ()
@@ -985,6 +1004,26 @@ done:
     platform_revision = pch->revision;
 }
 
+int xenstore_get_xen_pvdevice_enabled(void)
+{
+    char *node = NULL, *val = NULL;
+    unsigned int len;
+    int pvdevice_enabled = 0;  /* disabled by default */
+
+    if ( pasprintf(&node, "/local/domain/%u/control/has-vendor-device", domid) < 0 )
+        goto out;
+
+    if ( (val = xs_read(xsh, XBT_NULL, node, &len)) == NULL )
+        goto out;
+
+    pvdevice_enabled = (atoi(val) == 1);
+
+out:
+    free(val);
+    free(node);
+    return pvdevice_enabled;
+}
+
 int xenstore_fd(void)
 {
     if (xsh)
@@ -1006,8 +1045,8 @@ static void xenstore_process_logdirty_event(void)
     unsigned int len;
 
     /* Remember the paths for the command and response entries */
-    sprintf(ret_path, "/local/domain/0/device-model/%u/logdirty/ret", domid);
-    sprintf(cmd_path, "/local/domain/0/device-model/%u/logdirty/cmd", domid);
+    sprintf(ret_path, "device-model/%u/logdirty/ret", domid);
+    sprintf(cmd_path, "device-model/%u/logdirty/cmd", domid);
 
     /* Read the required active buffer from the store */
     act = xs_read(xsh, XBT_NULL, cmd_path, &len);
@@ -1039,15 +1078,15 @@ static void xenstore_process_dm_command_event(void)
     char path[128], *command = NULL, *par = NULL;
     unsigned int len;
 
-    sprintf(path, "/local/domain/0/device-model/%u/command", domid);
+    sprintf(path, "device-model/%u/command", domid);
     command = xs_read(xsh, XBT_NULL, path, &len);
     if (!command)
         goto out;
 
-    sprintf(path, "/local/domain/0/device-model/%u/parameter", domid);
+    sprintf(path, "device-model/%u/parameter", domid);
     par = xs_read(xsh, XBT_NULL, path, NULL);
 
-    sprintf(path, "/local/domain/0/device-model/%u/command", domid);
+    sprintf(path, "device-model/%u/command", domid);
     if (!xs_rm(xsh, XBT_NULL, path))
         fprintf(logfile, "xs_rm failed: path=%s\n", path);
 
@@ -1382,7 +1421,6 @@ void xenstore_process_event(void *opaque)
 {
     char **vec, *offset, *bpath = NULL, *buf = NULL, *drv = NULL, *image = NULL;
     unsigned int len, num, hd_index, i;
-    xc_dominfo_t dominfo;
 
     vec = xs_read_watch(xsh, &num);
     if (!vec)
@@ -1423,14 +1461,21 @@ void xenstore_process_event(void *opaque)
     }
 
     if (!strcmp(vec[XS_WATCH_TOKEN], "releaseDomain")) {
-        int rc;
-        if ( (rc=xc_domain_getinfo(xc_handle, domid, 1, &dominfo)) != 1
-            || dominfo.domid != domid || dominfo.dying)
+        xc_dominfo_t dominfo;
+        int rc = xc_domain_getinfo(xc_handle, domid, 1, &dominfo);
+
+        if ( rc < 0 ) {
+            fprintf(stderr, "xc_domain_getinfo() failed (%d) %s\n",
+                    errno, strerror(errno));
+            exit(1);
+        } else if ( rc != 1 || dominfo.domid != domid ) {
+            fprintf(stderr, "No domain with domid %d\n", domid);
+            exit(1);
+        } else if ( dominfo.dying )
             qemu_system_exit_request();
         else
-            fprintf(stderr," releaseDomain signal caught, but domain %d not dead:\n" \
-                    "   rc %d dominfo.domid %d dominfo.dying %d\n",
-                    domid, rc, dominfo.domid, dominfo.dying);
+            fprintf(stderr, "Processed releaseDomain, but domain %d not dead\n",
+                    domid);
         goto out;
     }
 
@@ -1544,6 +1589,7 @@ void xenstore_write_vncport(int display)
         fprintf(logfile, "xs_write() vncport failed\n");
 
  out:
+    free(path);
     free(portstr);
     free(buf);
 }
@@ -1807,7 +1853,7 @@ char *xenstore_device_model_read(int domid, const char *key, unsigned int *len)
 {
     char *path = NULL, *value = NULL;
 
-    if (pasprintf(&path, "/local/domain/0/device-model/%d/%s", domid, key) == -1)
+    if (pasprintf(&path, "device-model/%d/%s", domid, key) == -1)
         return NULL;
 
     value = xs_read(xsh, XBT_NULL, path, len);
@@ -1897,9 +1943,9 @@ int store_dev_info(const char *devName, int domid,
     fprintf(logfile, "can't store dev %s name for domid %d in %s from a stub domain\n", devName, domid, storeString);
     return ENOSYS;
 #else
-    xc_interface *xc_handle;
-    struct xs_handle *xs;
-    char *path;
+    xc_interface *xc_handle = NULL;
+    struct xs_handle *xs = NULL;
+    char *path = NULL;
     char *newpath;
     char *pts;
     char namebuf[128];
@@ -1917,31 +1963,31 @@ int store_dev_info(const char *devName, int domid,
     }
     if (memcmp(namebuf, "pty ", 4)) return 0;
     pts = namebuf + 4;
+    ret = -1;
 
     /* We now have everything we need to set the xenstore entry. */
     xs = xs_daemon_open();
     if (xs == NULL) {
         fprintf(logfile, "Could not contact XenStore\n");
-        return -1;
+        goto out;
     }
 
     xc_handle = xc_interface_open(0,0,0);
     if (xc_handle == NULL) {
         fprintf(logfile, "xc_interface_open() error\n");
-        return -1;
+        goto out;
     }
 
     path = xs_get_domain_path(xs, domid);
     if (path == NULL) {
         fprintf(logfile, "xs_get_domain_path() error\n");
-        return -1;
+        goto out;
     }
     newpath = realloc(path, (strlen(path) + strlen(storeString) +
                              strlen("/tty") + 1));
     if (newpath == NULL) {
-        free(path); /* realloc errors leave old block */
         fprintf(logfile, "realloc error\n");
-        return -1;
+        goto out;
     }
     path = newpath;
 
@@ -1949,14 +1995,19 @@ int store_dev_info(const char *devName, int domid,
     strcat(path, "/tty");
     if (!xs_write(xs, XBT_NULL, path, pts, strlen(pts))) {
         fprintf(logfile, "xs_write for '%s' fail", storeString);
-        return -1;
+        goto out;
     }
 
-    free(path);
-    xs_daemon_close(xs);
-    xc_interface_close(xc_handle);
+    ret = 0;
+ out:
 
-    return 0;
+    free(path);
+    if (xs)
+        xs_daemon_close(xs);
+    if (xc_handle)
+        xc_interface_close(xc_handle);
+
+    return ret;
 #endif
 }
 

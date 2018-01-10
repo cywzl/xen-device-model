@@ -44,7 +44,7 @@
  * name in p.
  */
 //skylark //add static
-/*
+
 static const char *get_opt_name(char *buf, int buf_size, const char *p, char delim)
 {
     char *q;
@@ -60,7 +60,7 @@ static const char *get_opt_name(char *buf, int buf_size, const char *p, char del
 
     return p;
 }
-*/
+
 /*
  * Extracts the value of an option from the parameter string p (p points at the
  * first byte of the option value)
@@ -69,8 +69,8 @@ static const char *get_opt_name(char *buf, int buf_size, const char *p, char del
  * delimiter is fixed to be comma which starts a new option. To specify an
  * option value that contains commas, double each comma.
  */
-/*
-const char *get_opt_value(char *buf, int buf_size, const char *p)
+
+static const char *get_opt_value(char *buf, int buf_size, const char *p)
 {
     char *q;
 
@@ -90,7 +90,7 @@ const char *get_opt_value(char *buf, int buf_size, const char *p)
 
     return p;
 }
-*/
+
 int get_next_param_value(char *buf, int buf_size,
                          const char *tag, const char **pstr)
 {

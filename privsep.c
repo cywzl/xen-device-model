@@ -99,6 +99,7 @@
 #include "exec-all.h"
 #include "privsep.h"
 #include "qemu-xen.h"
+#include <xen/evtchn.h>
 
 #ifndef CLONE_NEWNET
 #define CLONE_NEWNET 0x40000000
@@ -223,17 +224,12 @@ clean_exit(int ret)
 {
     if (strcmp(root_directory, "/var/empty")) {
         char name[80];
-        struct stat buf;
         strcpy(name, root_directory);
         strcat(name, "/etc/localtime");
         unlink(name);
         strcpy(name, root_directory);
         strcat(name, "/etc");
         rmdir(name);
-
-        snprintf(name, 80, "%s/core.%d", root_directory, parent_pid);
-        if (!stat(name, &buf) && !buf.st_size)
-            unlink(name);
 
         rmdir(root_directory);
     }
@@ -675,7 +671,7 @@ privsep_unlock_cd(int id)
     }
 }
 
-static int 
+static int
 xenstore_vm_write(int domid, const char *key, const char *value)
 {
     char *buf, *path;
@@ -920,7 +916,7 @@ do_record_dm(const char *subpath, const char *state)
 {
     char *path = NULL;
 
-    if (asprintf(&path, 
+    if (asprintf(&path,
                 "/local/domain/0/device-model/%u/%s", domid, subpath) < 0) {
         return;
     }
@@ -949,7 +945,7 @@ do_read_dm(const char *subpath)
     char *path = NULL, *res;
     int e;
 
-    if (asprintf(&path, 
+    if (asprintf(&path,
                 "/local/domain/0/device-model/%u/%s", domid, subpath) < 0) {
         return NULL;
     }
@@ -1335,15 +1331,6 @@ init_privsep(void)
     memset (&sigxfsz_handler, 0, sizeof(struct sigaction));
     sigterm_handler.sa_handler = sigterm_handler_f;
     sigxfsz_handler.sa_handler = sigxfsz_handler_f;
-    struct rlimit rlim;
-    char name[64];
-    int f;
-
-    if (!crashdump_enabled()) {
-        rlim.rlim_cur = 64 * 1024 * 1024;
-        rlim.rlim_max = 64 * 1024 * 1024 + 64;
-        setrlimit(RLIMIT_FSIZE, &rlim);
-    }
 
     /* restrict network */
     if (unshare(CLONE_NEWNET))
@@ -1353,13 +1340,6 @@ init_privsep(void)
         || chroot(root_directory) < 0
         || chdir("/") < 0)
         err(1, "cannot chroot");
-
-    snprintf(name, 64, "core.%d", parent_pid);
-    f = open(name, O_WRONLY|O_TRUNC|O_CREAT|O_NOFOLLOW, 0644);
-    if (f > 0) {
-        close(f);
-        chown(name, qemu_uid, qemu_gid);
-    }
 
     if (setgroups(0, NULL) < 0)
         err(1, "setgroups()");
@@ -1622,6 +1602,31 @@ path_starts_with(const char *path, const char *s)
     return strncmp(path, s, l) == 0 && (path[l] == 0 || path[l] == '/');
 }
 
+/*
+ * Check a xenstore path which may or may not be relative to /local/domain/0.
+ * 's' must be non-relative.  Returns NULL, or a pointer in 'path' with 's'
+ * chopped off.
+ */
+static inline const char *
+relpath_starts_with(const char *path, const char *s)
+{
+    static const char relpath[] = "/local/domain/0";
+    char fqpath[sizeof(relpath) + strlen(path) + 1];
+
+    if (path_starts_with(path, s))
+        return path + strlen(s);
+
+    /*
+     * Permit 'path' if, when prepending with 'relpath', matches 's'.
+     */
+    sprintf(fqpath, "%s/%s", relpath, path);
+
+    if (path_starts_with(fqpath, s))
+        return path + strlen(s) - sizeof(relpath);
+
+    return NULL;
+}
+
 static bool
 check_xs_path(const char *path, check_type_t check)
 {
@@ -1656,8 +1661,7 @@ check_xs_path(const char *path, check_type_t check)
             return true;
     }
 
-    if (path_starts_with(path, dm_d0)) {
-        s = path + strlen(dm_d0);
+    if ((s = relpath_starts_with(path, dm_d0)) != NULL) {
         sprintf(dom_num, "/%u", domid);
         if (!path_starts_with(s, dom_num))
             goto fail;
@@ -1672,13 +1676,13 @@ check_xs_path(const char *path, check_type_t check)
             || strcmp(s, "parameter") == 0
             || strcmp(s, "state") == 0)
             return true;
+        goto fail;
     }
 
     if (check != CHECK_READ)
         goto fail;
 
-    if (path_starts_with(path, backend_d0)) {
-        s = path + strlen(backend_d0);
+    if ((s = relpath_starts_with(path, backend_d0)) != NULL) {
         if (s[0] != '/' || s[1] == 0 || s[1] == '/')
             return false;
         s = strchr(s+2, '/');
@@ -1686,6 +1690,7 @@ check_xs_path(const char *path, check_type_t check)
         sprintf(dom_num, "%u", domid);
         if (path_starts_with(s+1, dom_num))
             return true;
+        goto fail;
     }
 
     if (vm_path && path_starts_with(path, vm_path))
@@ -2059,19 +2064,15 @@ xc_interface_restrict_qemu(xc_interface *xc_handle, int domid)
     return p(xc_handle, domid);
 }
 
-#define IOCTL_EVTCHN_RESTRICT_DOMID                    \
-    _IOC(_IOC_NONE, 'E', 100, sizeof(struct ioctl_evtchn_restrict_domid))
-struct ioctl_evtchn_restrict_domid {
-    domid_t domid;
-};
+
 
 int
-xc_evtchn_restrict(xc_interface *xce_handle, int domid)
+xc_evtchn_restrict(xenevtchn_handle *xce_handle, int domid)
 {
     int fd;
     struct ioctl_evtchn_restrict_domid restrict_domid = { domid };
 
-    fd = xc_evtchn_fd(xce_handle);
+    fd = xenevtchn_fd(xce_handle);
     if (fd < 0)
         return -1;
     if (ioctl(fd, IOCTL_EVTCHN_RESTRICT_DOMID, &restrict_domid) < 0)

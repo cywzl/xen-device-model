@@ -103,6 +103,7 @@ typedef struct PCIQXLDevice {
 void *qxl_phys2virt(PCIQXLDevice *qxl, QXLPHYSICAL phys, int group_id);
 int qxl_init(PCIBus *bus, uint8_t *vga_ram_base, unsigned long vga_ram_offset, 
               uint32_t vga_ram_size);
+void qxl_add_interface(void *opaque);
 
 /* qxl-logger.c */
 void qxl_log_cmd_cursor(PCIQXLDevice *qxl, QXLCursorCmd *cmd, int group_id);

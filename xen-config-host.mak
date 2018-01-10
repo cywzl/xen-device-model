@@ -1,5 +1,4 @@
 QEMU_ROOT ?= .
-XEN_ROOT ?= $(QEMU_ROOT)/../xen-unstable.hg
 include $(QEMU_ROOT)/Rules.mk
 
 ifdef CONFIG_STUBDOM

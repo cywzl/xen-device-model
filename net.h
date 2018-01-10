@@ -109,8 +109,8 @@ void net_host_device_add(const char *device, const char *opts);
 void net_host_device_remove(int vlan_id, const char *device);
 
 #ifndef DEFAULT_NETWORK_SCRIPT
-#define DEFAULT_NETWORK_SCRIPT ""
-#define DEFAULT_NETWORK_DOWN_SCRIPT ""
+#define DEFAULT_NETWORK_SCRIPT "/etc/qemu-ifup"
+#define DEFAULT_NETWORK_DOWN_SCRIPT "/etc/qemu-ifdown"
 #endif
 #ifdef __sun__
 #define SMBD_COMMAND "/usr/sfw/sbin/smbd"

@@ -2,7 +2,12 @@
 #ifndef QEMU_COMMON_H
 #define QEMU_COMMON_H
 
-#include "config-host.h"
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#define WINVER 0x0501  /* needed for ipv6 bits */
+#include <windows.h>
+#define NO_UNIX_SOCKETS 1
+#endif
 
 #define QEMU_NORETURN __attribute__ ((__noreturn__))
 #ifdef CONFIG_GCC_ATTRIBUTE_WARN_UNUSED_RESULT
@@ -17,11 +22,15 @@
 typedef struct DeviceState DeviceState;
 //////////////////////////////////////////////////////
 
+/* Hack around the mess dyngen-exec.h causes: We need QEMU_NORETURN in files that
+   cannot include the following headers without conflicts. This condition has
+   to be removed once dyngen is gone. */
+#ifndef __DYNGEN_EXEC_H__
+
 /* we put basic includes here to avoid repeating them in device drivers */
 #include <stdlib.h>
 #include <stdio.h>
 #include <stdarg.h>
-#include <stdbool.h>
 #include <string.h>
 #include <strings.h>
 #include <inttypes.h>
@@ -32,7 +41,7 @@ typedef struct DeviceState DeviceState;
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/stat.h>
-#include <assert.h>
+#include "config-host.h"
 
 #ifndef O_LARGEFILE
 #define O_LARGEFILE 0
@@ -50,7 +59,6 @@ typedef struct DeviceState DeviceState;
 #define ENOTSUP 4096
 #endif
 
-//skylark//////////////////////////////////////////////
 #ifndef HAVE_IOVEC
 #define HAVE_IOVEC
 struct iovec {
@@ -67,31 +75,27 @@ struct iovec {
 #endif
 
 #if defined __GNUC__
-#if (__GNUC__ < 4) || \
-     defined(__GNUC_MINOR__) && (__GNUC__ == 4) && (__GNUC_MINOR__ < 4)
-   /* gcc versions before 4.4.x don't support gnu_printf, so use printf. */
-#define GCC_ATTR __attribute__((__unused__, format(printf, 1, 2)))
-#define GCC_FMT_ATTR(n, m) __attribute__((format(printf, n, m)))
-#else
-   /* Use gnu_printf when supported (qemu uses standard format strings). */
-#define GCC_ATTR __attribute__((__unused__, format(gnu_printf, 1, 2)))
-#define GCC_FMT_ATTR(n, m) __attribute__((format(gnu_printf, n, m)))
+#ifndef GCC_ATTR
+#define GCC_ATTR __attribute__ ((__unused__, __format__ (__printf__, 1, 2)))
 #endif
+#ifndef GCC_FMT_ATTR
+#define GCC_FMT_ATTR(n, m) __attribute__ ((__format__ (__printf__, n, m)))
+#endif
+
 #else
 #define GCC_ATTR /**/
 #define GCC_FMT_ATTR(n, m)
 #endif
-
-typedef int (*fprintf_function)(FILE *f, const char *fmt, ...)
-    GCC_FMT_ATTR(2, 3);
 
 
 
 #ifdef _WIN32
 #define fsync _commit
 #define lseek _lseeki64
+#define ENOTSUP 4096
 extern int qemu_ftruncate64(int, int64_t);
 #define ftruncate qemu_ftruncate64
+
 
 static inline char *realpath(const char *path, char *resolved_path)
 {
@@ -138,6 +142,7 @@ void qemu_bh_schedule_idle(QEMUBH *bh);
 void qemu_bh_cancel(QEMUBH *bh);
 void qemu_bh_delete(QEMUBH *bh);
 int qemu_bh_poll(void);
+
 uint64_t muldiv64(uint64_t a, uint32_t b, uint32_t c);
 
 //spice.v21
@@ -212,10 +217,9 @@ int qemu_pipe(int pipefd[2]);
 #endif
 
 /* Error handling.  */
+
 void QEMU_NORETURN hw_error(const char *fmt, ...)
     __attribute__ ((__format__ (__printf__, 1, 2)));
-//spice.v21
-//void QEMU_NORETURN hw_error(const char *fmt, ...) GCC_FMT_ATTR(1, 2);
 
 /* IO callbacks.  */
 typedef void IOReadHandler(void *opaque, const uint8_t *buf, int size);
@@ -281,7 +285,7 @@ typedef struct EventNotifier EventNotifier;
 //typedef struct VirtIODevice VirtIODevice;
 ///////////////////////////////////////////////////////
 
-typedef uint64_t pcibus_t;
+typedef uint32_t pcibus_t;
 //skylark//////////////////////////////////////////////
 /*
 typedef enum {
@@ -353,33 +357,11 @@ void qemu_iovec_memset(QEMUIOVector *qiov, int c, size_t count);
 struct Monitor;
 typedef struct Monitor Monitor;
 
-/* compute with 96 bit intermediate result: (a*b)/c */
+#endif /* dyngen-exec.h hack */
 /*
-static inline uint64_t muldiv64(uint64_t a, uint32_t b, uint32_t c)
-{
-    union {
-        uint64_t ll;
-        struct {
-#ifdef HOST_WORDS_BIGENDIAN
-            uint32_t high, low;
-#else
-            uint32_t low, high;
-#endif
-        } l;
-    } u, res;
-    uint64_t rl, rh;
-
-    u.ll = a;
-    rl = (uint64_t)u.l.low * (uint64_t)b;
-    rh = (uint64_t)u.l.high * (uint64_t)b;
-    rh += (rl >> 32);
-    res.l.high = rh / c;
-    res.l.low = (((rh % c) << 32) + (rl & 0xffffffff)) / c;
-    return res.ll;
-}
-*/
-///////////////////////////////////////////////////////
-
+ * Redirect calls to output to internal functions to be able
+ * to redirect output to syslog directly
+ */
 #ifdef CONFIG_SYSLOG
 extern char use_syslog;
 
@@ -394,4 +376,3 @@ void log_perror(const char *s);
 #endif
 
 #endif
-

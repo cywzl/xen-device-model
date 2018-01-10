@@ -4,7 +4,7 @@ CONFIG_BLKTAP1 := n
 VPATH=$(SRC_PATH)/tests
 
 CFLAGS := -Wall -Werror -O2 -g -fno-strict-aliasing -ftest-coverage -fprofile-arcs
-LDFLAGS=
+LDFLAGS= -lxenevtchn
 
 TESTS=xen-tests
 

@@ -47,6 +47,7 @@ int send_all(int fd, const void *buf, int len1);
 int inet_listen(const char *str, char *ostr, int olen,
                 int socktype, int port_offset);
 int inet_connect(const char *str, int socktype);
+const char *inet_strfamily(int family);
 
 int unix_listen(const char *path, char *ostr, int olen);
 int unix_connect(const char *path);
