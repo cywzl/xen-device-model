@@ -919,7 +919,6 @@ static void ide_set_signature(IDEState *s)
     }
 }
 
-
 static void ide_dma_cancel(BMDMAState *bm);
 static inline void ide_abort_command(IDEState *s)
 {
@@ -1234,7 +1233,9 @@ static void ide_read_dma_cb(void *opaque, int ret)
 	return;
     }
 
-    if (!s || !s->bs) return; /* ouch! (see ide_dma_error & ide_flush_cb) */
+    if (!s ||   /* Cancelled DMA? */
+        !s->bs) /* ouch! (see ide_dma_error & ide_flush_cb) */
+        return; 
 
     n = s->io_buffer_size >> 9;
     sector_num = ide_get_sector(s);
@@ -1339,9 +1340,11 @@ static void ide_write_flush_cb(void *opaque, int ret) {
     BMDMAState *bm = opaque;
     IDEState *s = bm->ide_if;
 
+    if (!s)  /* Cancelled DMA? */
+         return;
     if (ret != 0) {
-	ide_dma_error(s);
-	return;
+        ide_dma_error(s);
+        return;
     }
     s->status = READY_STAT | SEEK_STAT;
     ide_set_irq(s);
@@ -1375,7 +1378,9 @@ static void ide_write_dma_cb(void *opaque, int ret)
             return;
     }
 
-    if (!s || !s->bs) return; /* ouch! (see ide_dma_error & ide_flush_cb) */
+    if (!s ||   /* Cancelled DMA? */
+        !s->bs) /* ouch! (see ide_dma_error & ide_flush_cb) */
+        return;
 
     n = s->io_buffer_size >> 9;
     sector_num = ide_get_sector(s);
@@ -1433,7 +1438,9 @@ static void ide_flush_cb(void *opaque, int ret)
 {
     IDEState *s = opaque;
 
-    if (!s->bs) return; /* ouch! (see below) */
+    if (!s ||   /* Cancelled DMA? */
+        !s->bs) /* ouch! (see below) */
+        return;
 
     if (ret) {
         /* We are completely doomed.  The IDE spec does not permit us
@@ -1690,7 +1697,9 @@ static void ide_atapi_cmd_read_dma_cb(void *opaque, int ret)
     IDEState *s = bm->ide_if;
     int data_offset, n;
 
-    if (!s->bs) return; /* ouch! (see ide_flush_cb) */
+    if (!s ||   /* Cancelled DMA? */
+        !s->bs) /* ouch! (see ide_flush_cb) */
+        return; 
 
     if (ret < 0) {
         ide_atapi_io_error(s, ret);
@@ -3085,11 +3094,17 @@ static void ide_data_writew(void *opaque, uint32_t addr, uint32_t val)
     buffered_pio_write(s, addr, 2);
 
     p = s->data_ptr;
+    if (p + 2 > s->data_end) {
+        return;
+    }
+
     *(uint16_t *)p = le16_to_cpu(val);
     p += 2;
     s->data_ptr = p;
-    if (p >= s->data_end)
+    if (p >= s->data_end) {
+        s->status &= ~DRQ_STAT;
         s->end_transfer_func(s);
+    }
 }
 
 static uint32_t ide_data_readw(void *opaque, uint32_t addr)
@@ -3104,11 +3119,17 @@ static uint32_t ide_data_readw(void *opaque, uint32_t addr)
     buffered_pio_read(s, addr, 2);
 
     p = s->data_ptr;
+    if (p + 2 > s->data_end) {
+        return 0;
+    }
+
     ret = cpu_to_le16(*(uint16_t *)p);
     p += 2;
     s->data_ptr = p;
-    if (p >= s->data_end)
+    if (p >= s->data_end) {
+        s->status &= ~DRQ_STAT;
         s->end_transfer_func(s);
+    }
     return ret;
 }
 
@@ -3123,11 +3144,17 @@ static void ide_data_writel(void *opaque, uint32_t addr, uint32_t val)
     buffered_pio_write(s, addr, 4);
 
     p = s->data_ptr;
+    if (p + 4 > s->data_end) {
+        return;
+    }
+
     *(uint32_t *)p = le32_to_cpu(val);
     p += 4;
     s->data_ptr = p;
-    if (p >= s->data_end)
+    if (p >= s->data_end) {
+        s->status &= ~DRQ_STAT;
         s->end_transfer_func(s);
+    }
 }
 
 static uint32_t ide_data_readl(void *opaque, uint32_t addr)
@@ -3142,11 +3169,17 @@ static uint32_t ide_data_readl(void *opaque, uint32_t addr)
     buffered_pio_read(s, addr, 4);
 
     p = s->data_ptr;
+    if (p + 4 > s->data_end) {
+        return 0;
+    }
+
     ret = cpu_to_le32(*(uint32_t *)p);
     p += 4;
     s->data_ptr = p;
-    if (p >= s->data_end)
+    if (p >= s->data_end) {
+        s->status &= ~DRQ_STAT;
         s->end_transfer_func(s);
+    }
     return ret;
 }
 
@@ -3975,6 +4008,9 @@ static void pmac_ide_transfer_cb(void *opaque, int ret)
     IDEState *s = m->ide_if->cur_drive;
     int n;
     int64_t sector_num;
+
+    if (!s) /* Cancelled DMA? */
+        return;
 
     if (ret < 0) {
         m->aiocb = NULL;

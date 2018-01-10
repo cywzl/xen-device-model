@@ -48,6 +48,7 @@
 #include <limits.h>
 #include <fcntl.h>
 
+#include <xenevtchn.h>
 #include <xenctrl.h>
 #include <xen/hvm/ioreq.h>
 #include <xen/hvm/hvm_info_table.h>
@@ -63,6 +64,7 @@
 #include "hw/pc.h"
 #include "net.h"
 #include "privsep.h"
+#include "hw/vga-xengt.h"
 
 //#define DEBUG_MMU
 
@@ -107,7 +109,7 @@ buffered_iopage_t *buffered_io_page = NULL;
 QEMUTimer *buffered_io_timer;
 
 /* the evtchn fd for polling */
-xc_interface *xce_handle = NULL;
+xenevtchn_handle *xce_handle = NULL;
 
 /* which vcpu we are serving */
 int send_vcpu = 0;
@@ -149,7 +151,7 @@ CPUX86State *cpu_x86_init(const char *cpu_model)
 
         cpu_single_env = env;
 
-        xce_handle = xc_evtchn_open(NULL, 0);
+        xce_handle = xenevtchn_open(NULL, 0);
         if (xce_handle == NULL) {
             perror("open");
             return NULL;
@@ -157,7 +159,7 @@ CPUX86State *cpu_x86_init(const char *cpu_model)
 
         /* FIXME: how about if we overflow the page here? */
         for (i = 0; i < vcpus; i++) {
-            rc = xc_evtchn_bind_interdomain(
+            rc = xenevtchn_bind_interdomain(
                 xce_handle, domid, shared_page->vcpu_ioreq[i].vp_eport);
             if (rc == -1) {
                 fprintf(logfile, "bind interdomain ioctl error %d\n", errno);
@@ -171,7 +173,7 @@ CPUX86State *cpu_x86_init(const char *cpu_model)
          * channel and use polling
          */
         if (rc >= 0) {
-            rc = xc_evtchn_bind_interdomain(xce_handle, domid, (uint32_t)bufioreq_evtchn);
+            rc = xenevtchn_bind_interdomain(xce_handle, domid, (uint32_t)bufioreq_evtchn);
             if (rc == -1) {
                 fprintf(logfile, "bind interdomain ioctl error %d\n", errno);
                 return NULL;
@@ -286,7 +288,7 @@ static ioreq_t *cpu_get_ioreq(void)
     int i;
     evtchn_port_t port;
 
-    port = xc_evtchn_pending(xce_handle);
+    port = xenevtchn_pending(xce_handle);
     if (bufioreq_local_port != EVTCHN_PORT_INVALID &&
         port == bufioreq_local_port) {
         qemu_mod_timer(buffered_io_timer,
@@ -305,7 +307,7 @@ static ioreq_t *cpu_get_ioreq(void)
         }
 
         // unmask the wanted port again
-        xc_evtchn_unmask(xce_handle, port);
+        xenevtchn_unmask(xce_handle, port);
 
         //get the io packet from shared memory
         send_vcpu = i;
@@ -383,6 +385,12 @@ static void cpu_ioreq_pio(CPUState *env, ioreq_t *req)
 {
     uint32_t i;
 
+    if (req->size > sizeof(unsigned long)) {
+        fprintf(stderr, "PIO: bad size (%u)\n", req->size);
+        exit(-1);
+    }
+    req->addr &= 0x0ffffU;
+
     if (req->dir == IOREQ_READ) {
         if (!req->data_is_ptr) {
             req->data = do_inp(env, req->addr, req->size);
@@ -411,6 +419,11 @@ static void cpu_ioreq_pio(CPUState *env, ioreq_t *req)
 static void cpu_ioreq_move(CPUState *env, ioreq_t *req)
 {
     uint32_t i;
+
+    if (req->size > sizeof(req->data)) {
+        fprintf(stderr, "MMIO: bad size (%u)\n", req->size);
+        exit(-1);
+    }
 
     if (!req->data_is_ptr) {
         if (req->dir == IOREQ_READ) {
@@ -501,10 +514,19 @@ static int __handle_buffered_iopage(CPUState *env)
 
     req.count = 0;
 
-    while (buffered_io_page->read_pointer !=
-           buffered_io_page->write_pointer) {
-        buf_req = &buffered_io_page->buf_ioreq[
-            buffered_io_page->read_pointer % IOREQ_BUFFER_SLOT_NUM];
+    for (;;) {
+        uint32_t rdptr = buffered_io_page->read_pointer, wrptr;
+
+        xen_rmb();
+        wrptr = buffered_io_page->write_pointer;
+        xen_rmb();
+        if (rdptr != buffered_io_page->read_pointer) {
+            continue;
+        }
+        if (rdptr == wrptr) {
+            break;
+        }
+        buf_req = &buffered_io_page->buf_ioreq[rdptr % IOREQ_BUFFER_SLOT_NUM];
         req.size = 1UL << buf_req->size;
         req.count = 1;
         req.addr = buf_req->addr;
@@ -514,17 +536,18 @@ static int __handle_buffered_iopage(CPUState *env)
         req.df = 1;
         req.type = buf_req->type;
         req.data_is_ptr = 0;
+        xen_rmb();
         qw = (req.size == 8);
         if (qw) {
-            buf_req = &buffered_io_page->buf_ioreq[
-                (buffered_io_page->read_pointer+1) % IOREQ_BUFFER_SLOT_NUM];
+            buf_req = &buffered_io_page->buf_ioreq[(rdptr + 1) %
+                                                   IOREQ_BUFFER_SLOT_NUM];
             req.data |= ((uint64_t)buf_req->data) << 32;
+            xen_rmb();
         }
 
         __handle_ioreq(env, &req);
 
-        xen_mb();
-        buffered_io_page->read_pointer += qw ? 2 : 1;
+        __sync_fetch_and_add(&buffered_io_page->read_pointer, qw + 1);
     }
 
     return req.count;
@@ -540,7 +563,7 @@ static void handle_buffered_io(void *opaque)
                 BUFFER_IO_MAX_DELAY + qemu_get_clock(rt_clock));
     } else {
         qemu_del_timer(buffered_io_timer);
-        xc_evtchn_unmask(xce_handle, bufioreq_local_port);
+        xenevtchn_unmask(xce_handle, bufioreq_local_port);
     }
 }
 
@@ -552,7 +575,11 @@ static void cpu_handle_ioreq(void *opaque)
 
     __handle_buffered_iopage(env);
     if (req) {
-        __handle_ioreq(env, req);
+        ioreq_t copy = *req;
+
+        xen_rmb();
+        __handle_ioreq(env, &copy);
+        req->data = copy.data;
 
         if (req->state != STATE_IOREQ_INPROCESS) {
             fprintf(logfile, "Badness in I/O request ... not in service?!: "
@@ -584,7 +611,7 @@ static void cpu_handle_ioreq(void *opaque)
 	}
 
         req->state = STATE_IORESP_READY;
-        xc_evtchn_notify(xce_handle, ioreq_local_port[send_vcpu]);
+        xenevtchn_notify(xce_handle, ioreq_local_port[send_vcpu]);
     }
 }
 
@@ -593,7 +620,7 @@ int xen_pause_requested;
 int main_loop(void)
 {
     CPUState *env = cpu_single_env;
-    int evtchn_fd = xce_handle == NULL ? -1 : xc_evtchn_fd(xce_handle);
+    int evtchn_fd = xce_handle == NULL ? -1 : xenevtchn_fd(xce_handle);
     char *qemu_file;
     fd_set fds;
 
@@ -660,7 +687,7 @@ int main_loop(void)
 void destroy_hvm_domain(void)
 {
     int sts;
- 
+
     sts = xc_domain_shutdown(xc_handle, domid, SHUTDOWN_poweroff);
     if (sts != 0)
         fprintf(logfile, "? xc_domain_shutdown failed to issue poweroff, "

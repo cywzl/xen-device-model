@@ -53,6 +53,7 @@
 
 #include <xen/hvm/hvm_info_table.h>
 
+#include <assert.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <signal.h>
@@ -60,7 +61,6 @@
 #include <errno.h>
 #include <sys/time.h>
 #include <zlib.h>
-#include <err.h>
 #include <assert.h>
 
 #ifndef _WIN32
@@ -242,7 +242,9 @@ int cirrus_vga_enabled = 1;
 int std_vga_enabled = 0;
 int vmsvga_enabled = 0;
 int vgpu_enabled = 0;
+int xengt_vga_enabled = 0;
 int gfx_passthru = 0;
+int igd_max_bar_sz = 512;
 #ifdef TARGET_SPARC
 int graphic_width = 1024;
 int graphic_height = 768;
@@ -361,7 +363,7 @@ static ioport_data_t *get_ioport_alloc(int address)
 }
 
 
-static uint32_t ioport_read(int index, uint32_t address)
+static uint32_t ioport_read(int index, uint16_t address)
 {
     const ioport_data_t *port = get_ioport(address);
 #ifdef OLD_IOPORT
@@ -370,6 +372,8 @@ static uint32_t ioport_read(int index, uint32_t address)
         default_ioport_readw,
         default_ioport_readl
     };
+    if (address >= MAX_IOPORTS)
+        abort();
     IOPortReadFunc *func = ioport_read_table[index][address];
     if (!func)
         func = default_func[index];
@@ -381,7 +385,7 @@ static uint32_t ioport_read(int index, uint32_t address)
 #endif
 }
 
-static void ioport_write(int index, uint32_t address, uint32_t data)
+static void ioport_write(int index, uint16_t address, uint32_t data)
 {
     const ioport_data_t *port = get_ioport(address);
 #ifdef OLD_IOPORT
@@ -390,6 +394,8 @@ static void ioport_write(int index, uint32_t address, uint32_t data)
         default_ioport_writew,
         default_ioport_writel
     };
+    if (address >= MAX_IOPORTS)
+        abort();
     IOPortWriteFunc *func = ioport_write_table[index][address];
     if (!func)
         func = default_func[index];
@@ -974,7 +980,7 @@ static int64_t cpu_get_clock(void)
 }
 
 /* enable cpu_get_ticks() */
-static void cpu_enable_ticks(void)
+void cpu_enable_ticks(void)
 {
     if (!cpu_ticks_enabled) {
         update_get_clock();
@@ -986,7 +992,7 @@ static void cpu_enable_ticks(void)
 
 /* disable cpu_get_ticks() : the clock is stopped. You must not call
    cpu_get_ticks() after that.  */
-static void cpu_disable_ticks(void)
+void cpu_disable_ticks(void)
 {
     if (cpu_ticks_enabled) {
         cpu_ticks_offset = cpu_get_ticks();
@@ -2476,6 +2482,7 @@ typedef struct IOHandlerRecord {
     IOCanRWHandler *fd_read_poll;
     IOHandler *fd_read;
     IOHandler *fd_write;
+    IOHandler *fd_exception;
     int deleted;
     void *opaque;
     /* temporary data */
@@ -2487,15 +2494,16 @@ static IOHandlerRecord *first_io_handler;
 
 /* XXX: fd_read_poll should be suppressed, but an API change is
    necessary in the character devices to suppress fd_can_read(). */
-int qemu_set_fd_handler2(int fd,
+int qemu_set_fd_handler3(int fd,
                          IOCanRWHandler *fd_read_poll,
                          IOHandler *fd_read,
                          IOHandler *fd_write,
+                         IOHandler *fd_exception,
                          void *opaque)
 {
     IOHandlerRecord **pioh, *ioh;
 
-    if (!fd_read && !fd_write) {
+    if (!fd_read && !fd_write && !fd_exception) {
         pioh = &first_io_handler;
         for(;;) {
             ioh = *pioh;
@@ -2520,12 +2528,21 @@ int qemu_set_fd_handler2(int fd,
         ioh->fd_read_poll = fd_read_poll;
         ioh->fd_read = fd_read;
         ioh->fd_write = fd_write;
+        ioh->fd_exception = fd_exception;
         ioh->opaque = opaque;
         ioh->deleted = 0;
     }
     return 0;
 }
 
+int qemu_set_fd_handler2(int fd,
+                        IOCanRWHandler *fd_read_poll,
+                        IOHandler *fd_read,
+                        IOHandler *fd_write,
+                        void *opaque)
+{
+    return qemu_set_fd_handler3(fd, fd_read_poll, fd_read, fd_write, NULL, opaque);
+}
 int qemu_set_fd_handler(int fd,
                         IOHandler *fd_read,
                         IOHandler *fd_write,
@@ -3135,6 +3152,16 @@ typedef struct QEMUResetEntry {
 } QEMUResetEntry;
 
 static QEMUResetEntry *first_reset_entry;
+
+typedef struct QEMUExitEntry {
+    QEMUExitHandler *func;
+    void *opaque;
+    struct QEMUExitEntry *next;
+} QEMUExitEntry;
+
+static QEMUExitEntry *first_exit_entry;
+
+static volatile sig_atomic_t sigterm_received;
 static int reset_requested;
 static int shutdown_requested;
 static int powerdown_requested;
@@ -3182,12 +3209,35 @@ void qemu_register_reset(QEMUResetHandler *func, void *opaque)
     *pre = re;
 }
 
+void qemu_register_exit(QEMUExitHandler *func, void *opaque)
+{
+    QEMUExitEntry **pre, *re;
+
+    pre = &first_exit_entry;
+    while (*pre != NULL)
+        pre = &(*pre)->next;
+    re = qemu_mallocz(sizeof(QEMUExitEntry));
+    re->func = func;
+    re->opaque = opaque;
+    re->next = NULL;
+    *pre = re;
+}
+
 void qemu_system_reset(void)
 {
     QEMUResetEntry *re;
 
     /* reset all devices */
     for(re = first_reset_entry; re != NULL; re = re->next) {
+        re->func(re->opaque);
+    }
+}
+
+static void qemu_handle_exit(void)
+{
+    QEMUExitEntry *re;
+
+    for(re = first_exit_entry; re != NULL; re = re->next) {
         re->func(re->opaque);
     }
 }
@@ -3288,6 +3338,11 @@ void main_loop_wait(int timeout)
 
     qemu_bh_update_timeout(&timeout);
 
+    if (sigterm_received) {
+        qemu_handle_exit();
+        exit(0);
+    }
+
     host_main_loop_wait(&timeout);
 
     /* poll any events */
@@ -3308,6 +3363,11 @@ void main_loop_wait(int timeout)
         }
         if (ioh->fd_write) {
             FD_SET(ioh->fd, &wfds);
+            if (ioh->fd > nfds)
+                nfds = ioh->fd;
+        }
+        if (ioh->fd_exception) {
+            FD_SET(ioh->fd, &xfds);
             if (ioh->fd > nfds)
                 nfds = ioh->fd;
         }
@@ -3336,6 +3396,9 @@ void main_loop_wait(int timeout)
             }
             if (!ioh->deleted && ioh->fd_write && FD_ISSET(ioh->fd, &wfds)) {
                 ioh->fd_write(ioh->opaque);
+            }
+            if (!ioh->deleted && ioh->fd_exception && FD_ISSET(ioh->fd, &xfds)) {
+                ioh->fd_exception(ioh->opaque);
             }
         }
 
@@ -3599,7 +3662,6 @@ static void help(int exitcode)
            "-alt-grab       use Ctrl-Alt-Shift to grab mouse (instead of Ctrl-Alt)\n"
            "-no-quit        disable SDL window close capability\n"
            "-sdl            enable SDL\n"
-           "-nograb         never grab mouse and keyboard\n"
            "-disable-opengl disable OpenGL rendering, using SDL"
 #endif
            "-portrait       rotate graphical output 90 deg left (only PXA LCD)\n"
@@ -3801,8 +3863,6 @@ enum {
     QEMU_OPTION_alt_grab,
     QEMU_OPTION_no_quit,
     QEMU_OPTION_sdl,
-    QEMU_OPTION_nograb,
-    QEMU_OPTION_geometry,
     QEMU_OPTION_portrait,
     QEMU_OPTION_vga,
     QEMU_OPTION_full_screen,
@@ -3840,11 +3900,18 @@ enum {
     QEMU_OPTION_videoram,
     QEMU_OPTION_std_vga,
     QEMU_OPTION_vgpu,
+    QEMU_OPTION_xengt,
     QEMU_OPTION_domid,
     QEMU_OPTION_domainname,
     QEMU_OPTION_acpi,
     QEMU_OPTION_vcpus,
     QEMU_OPTION_vcpu_avail,
+    QEMU_OPTION_vgt_low_gm_sz,
+    QEMU_OPTION_vgt_high_gm_sz,
+    QEMU_OPTION_vgt_fence_sz,
+    QEMU_OPTION_vgt_cap,
+    QEMU_OPTION_vgt_monitor_config_file,
+    QEMU_OPTION_igd_max_bar_sz,
 
     /* Debug/Expert options: */
     QEMU_OPTION_serial,
@@ -3881,8 +3948,6 @@ enum {
     QEMU_OPTION_chroot,
     QEMU_OPTION_priv,
     QEMU_OPTION_runas,
-    QEMU_OPTION_crashdump_dir,
-    QEMU_OPTION_crashdump_quota,
 #ifdef CONFIG_SYSLOG
     QEMU_OPTION_syslog,
 #endif
@@ -3941,8 +4006,6 @@ static const QEMUOption qemu_options[] = {
     { "alt-grab", 0, QEMU_OPTION_alt_grab },
     { "no-quit", 0, QEMU_OPTION_no_quit },
     { "sdl", 0, QEMU_OPTION_sdl },
-    { "nograb", 0, QEMU_OPTION_nograb },
-    { "geometry", HAS_ARG, QEMU_OPTION_geometry },
 #endif
     { "portrait", 0, QEMU_OPTION_portrait },
     { "vga", HAS_ARG, QEMU_OPTION_vga },
@@ -4019,6 +4082,7 @@ static const QEMUOption qemu_options[] = {
     /* Xen tree options: */
     { "std-vga", 0, QEMU_OPTION_std_vga },
     { "vgpu", 0, QEMU_OPTION_vgpu },
+    { "xengt", 0, QEMU_OPTION_xengt },
     { "videoram", HAS_ARG, QEMU_OPTION_videoram },
     { "d", HAS_ARG, QEMU_OPTION_domid }, /* deprecated; for xend compatibility */
     { "domid", HAS_ARG, QEMU_OPTION_domid },
@@ -4037,6 +4101,12 @@ static const QEMUOption qemu_options[] = {
     { "xen-create", 0, QEMU_OPTION_xen_create },
     { "xen-attach", 0, QEMU_OPTION_xen_attach },
 #endif
+    { "vgt_low_gm_sz", HAS_ARG, QEMU_OPTION_vgt_low_gm_sz },
+    { "vgt_high_gm_sz", HAS_ARG, QEMU_OPTION_vgt_high_gm_sz },
+    { "vgt_fence_sz", HAS_ARG, QEMU_OPTION_vgt_fence_sz },
+    { "vgt_cap", HAS_ARG, QEMU_OPTION_vgt_cap },
+    { "vgt_monitor_config_file", HAS_ARG, QEMU_OPTION_vgt_monitor_config_file },
+    { "igd_max_bar_sz", HAS_ARG, QEMU_OPTION_igd_max_bar_sz },
 
 #if defined(TARGET_ARM)
     { "old-param", 0, QEMU_OPTION_old_param },
@@ -4046,8 +4116,6 @@ static const QEMUOption qemu_options[] = {
     { "chroot", HAS_ARG, QEMU_OPTION_chroot },
     { "priv", 0, QEMU_OPTION_priv },
     { "runas", HAS_ARG, QEMU_OPTION_runas },
-    { "dumpdir", HAS_ARG, QEMU_OPTION_crashdump_dir },
-    { "dumpquota", HAS_ARG, QEMU_OPTION_crashdump_quota },
 #ifdef CONFIG_SYSLOG
     { syslog_option, 0, QEMU_OPTION_syslog },
 #endif
@@ -4204,30 +4272,42 @@ static void select_vgahw (const char *p)
         cirrus_vga_enabled = 0;
         vmsvga_enabled = 0;
         vgpu_enabled = 0;
+        xengt_vga_enabled = 0;
     } else if (strstart(p, "cirrus", &opts)) {
         cirrus_vga_enabled = 1;
         std_vga_enabled = 0;
         vmsvga_enabled = 0;
         vgpu_enabled = 0;
+        xengt_vga_enabled = 0;
     } else if (strstart(p, "vmware", &opts)) {
         cirrus_vga_enabled = 0;
         std_vga_enabled = 0;
         vmsvga_enabled = 1;
         vgpu_enabled = 0;
+        xengt_vga_enabled = 0;
     } else if (strstart(p, "passthrough", &opts)) {
         vmsvga_enabled = 0;
         gfx_passthru = 1;
         vgpu_enabled = 0;
+        xengt_vga_enabled = 0;
     } else if (strstart(p, "vgpu", &opts)) {
         cirrus_vga_enabled = 0;
         std_vga_enabled = 0;
         vmsvga_enabled = 0;
         vgpu_enabled = 1;
+        xengt_vga_enabled = 0;
+    } else if (strstart(p, "xengt", &opts)) {
+        cirrus_vga_enabled = 0;
+        std_vga_enabled = 0;
+        vmsvga_enabled = 0;
+        vgpu_enabled = 0;
+        xengt_vga_enabled = 1;
     } else if (strstart(p, "none", &opts)) {
         cirrus_vga_enabled = 0;
         std_vga_enabled = 0;
         vmsvga_enabled = 0;
         vgpu_enabled = 0;
+        xengt_vga_enabled = 0;
     } else {
     invalid_vga:
         fprintf(stderr, "Unknown vga type: %s\n", p);
@@ -4277,10 +4357,17 @@ static int qemu_uuid_parse(const char *str, uint8_t *uuid)
 
 #ifndef _WIN32
 
+#ifdef CONFIG_DM
+static void termsig_handler(int signal)
+{
+    sigterm_received = 1;
+}
+#else
 static void termsig_handler(int signal)
 {
     qemu_system_shutdown_request();
 }
+#endif
 
 static void termsig_setup(void)
 {
@@ -4288,9 +4375,11 @@ static void termsig_setup(void)
 
     memset(&act, 0, sizeof(act));
     act.sa_handler = termsig_handler;
+    sigaction(SIGTERM, &act, NULL);
+#ifndef CONFIG_DM
     sigaction(SIGINT,  &act, NULL);
     sigaction(SIGHUP,  &act, NULL);
-    sigaction(SIGTERM, &act, NULL);
+#endif
 }
 
 #endif
@@ -4412,8 +4501,6 @@ int main(int argc, char **argv, char **envp)
     struct passwd *pwd = NULL;
     const char *chroot_dir = NULL;
     const char *run_as = NULL;
-    char *crashdump_dir = NULL;
-    long long crashdump_quota = 0;
     QEMUFile *load_f = NULL;
 
     logfile = stderr; /* initial value */
@@ -4965,31 +5052,6 @@ int main(int argc, char **argv, char **envp)
             case QEMU_OPTION_sdl:
                 sdl = 1;
                 break;
-            case QEMU_OPTION_nograb:
-                grab_disabled = 1;
-                break;
-            case QEMU_OPTION_geometry:
-                {
-                    const char *p;
-                    int w, h;
-                    p = optarg;
-                    w = strtol(p, (char **)&p, 10);
-                    if (w <= 0) {
-geometry_error:
-                        fprintf(stderr, "qemu: invalid display geometry\n");
-                        exit(1);
-                    }
-                    if (*p != 'x')
-                        goto geometry_error;
-                    p++;
-                    h = strtol(p, (char **)&p, 10);
-                    if ((h <= 0) || (*p != '\0'))
-                        goto geometry_error;
-
-                    display_width = w;
-                    display_height = h;
-                }
-                break;
 #endif
 
             case QEMU_OPTION_pci_emulation:
@@ -5017,6 +5079,43 @@ geometry_error:
                 break;
             case QEMU_OPTION_vgpu:
                 select_vgahw("vgpu");
+                break;
+            case QEMU_OPTION_xengt:
+                select_vgahw("xengt");
+                break;
+            case QEMU_OPTION_vgt_low_gm_sz:
+                {
+                    char *ptr;
+                    vgt_low_gm_sz = strtol(optarg,&ptr,10);
+                }
+                break;
+            case QEMU_OPTION_vgt_high_gm_sz:
+                {
+                    char *ptr;
+                    vgt_high_gm_sz = strtol(optarg,&ptr,10);
+                }
+                break;
+            case QEMU_OPTION_vgt_fence_sz:
+                {
+                    char *ptr;
+                    vgt_fence_sz = strtol(optarg,&ptr,10);
+                }
+                break;
+            case QEMU_OPTION_vgt_cap:
+                {
+                    char *ptr;
+                    vgt_cap = strtol(optarg,&ptr,10);
+                }
+                break;
+            case QEMU_OPTION_vgt_monitor_config_file:
+                {
+                    vgt_monitor_config_file = optarg;
+                }
+                break;
+            case QEMU_OPTION_igd_max_bar_sz:
+                {
+                    igd_max_bar_sz = strtol(optarg,NULL,10);
+                }
                 break;
             case QEMU_OPTION_disable_opengl:
                 opengl_enabled = 0;
@@ -5230,12 +5329,6 @@ geometry_error:
                 break;
             case QEMU_OPTION_gfx_passthru:
                 select_vgahw("passthrough");
-                break;
-            case QEMU_OPTION_crashdump_dir:
-                crashdump_dir = (char *) optarg;
-                break;
-            case QEMU_OPTION_crashdump_quota:
-                crashdump_quota = strtoll(optarg, NULL, 0);
                 break;
             }
         }
@@ -5514,22 +5607,11 @@ geometry_error:
     register_savevm("timer", 0, 2, timer_save, timer_load, NULL);
     register_savevm_live("ram", 0, 3, ram_save_live, NULL, ram_load, NULL);
 
-    if (crashdump_quota != 0 && !crashdump_dir) {
-        fprintf(stderr, "can only set crashdump quota if crashdump dir also set\n");
-        exit(1);
-    }
-
-    if (crashdump_dir) {
-        provision_crashdump(crashdump_dir, crashdump_quota);
-    }
-
     init_privxsh();
 
 #ifndef _WIN32
-#ifndef CONFIG_DM
     /* must be after terminal init, SDL library changes signal handlers */
     termsig_setup();
-#endif
 #endif
 
     /* Maintain compatibility with multiple stdio monitors */
@@ -5606,6 +5688,15 @@ geometry_error:
             }
         }
     }
+
+#ifdef CONFIG_PASSTHROUGH
+    for (i = 0; i < nb_pci_emulation; i++) {
+        if (pci_emulation_add(pci_emulation_config_text[i]) < 0) {
+            fprintf(stderr, "Warning: could not add PCI device %s\n",
+                    pci_emulation_config_text[i]);
+        }
+    }
+#endif
 
     machine->init(ram_size, vga_ram_size, boot_devices,
                   kernel_filename, kernel_cmdline, initrd_filename, cpu_model,
@@ -5732,15 +5823,6 @@ geometry_error:
             snprintf(label, sizeof(label), "parallel%d", i);
         }
     }
-
-#ifdef CONFIG_PASSTHROUGH
-    for (i = 0; i < nb_pci_emulation; i++) {
-        if (pci_emulation_add(pci_emulation_config_text[i]) < 0) {
-            fprintf(stderr, "Warning: could not add PCI device %s\n",
-                    pci_emulation_config_text[i]);
-        }
-    }
-#endif
 
     for(i = 0; i < MAX_VIRTIO_CONSOLES; i++) {
         const char *devname = virtio_consoles[i];

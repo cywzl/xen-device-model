@@ -45,6 +45,9 @@
 
 //#define DEBUG_CIRRUS
 //#define DEBUG_BITBLT
+//#define DEBUG_VGA
+//#define DEBUG_VGA_MEM
+//#define DEBUG_VGA_REG
 
 /***************************************
  *
@@ -308,10 +311,9 @@ static bool blit_region_is_unsafe(struct CirrusVGAState *s,
 {
     if (pitch < 0) {
         int64_t min = addr
-            + ((int64_t)s->cirrus_blt_height-1) * pitch;
-        int32_t max = addr
-            + s->cirrus_blt_width;
-        if (min < 0 || max >= s->vram_size) {
+            + ((int64_t)s->cirrus_blt_height - 1) * pitch
+            - s->cirrus_blt_width;
+        if (min < -1 || addr >= s->vram_size) {
             return true;
         }
     } else {
@@ -793,11 +795,6 @@ static void cirrus_do_copy(CirrusVGAState *s, int dst, int src, int w, int h)
         }
     }
 
-    /* we have to flush all pending changes so that the copy
-       is generated at the appropriate moment in time */
-    if (notify)
-	vga_hw_update();
-
     (*s->cirrus_rop) (s, s->vram_ptr +
 		      (s->cirrus_blt_dstaddr & s->cirrus_addr_mask),
 		      s->vram_ptr +
@@ -806,13 +803,13 @@ static void cirrus_do_copy(CirrusVGAState *s, int dst, int src, int w, int h)
 		      s->cirrus_blt_width, s->cirrus_blt_height);
 
     if (notify)
-	qemu_console_copy(s->ds,
-			  sx, sy, dx, dy,
-			  s->cirrus_blt_width / depth,
-			  s->cirrus_blt_height);
+	dpy_update(s->ds,
+                   dx, dy,
+                   s->cirrus_blt_width / depth,
+                   s->cirrus_blt_height);
 
     /* we don't have to notify the display that this portion has
-       changed since qemu_console_copy implies this */
+       changed since dpy_update implies this */
 
     cirrus_invalidate_region(s, s->cirrus_blt_dstaddr,
 				s->cirrus_blt_dstpitch, s->cirrus_blt_width,
@@ -885,15 +882,23 @@ static void cirrus_bitblt_reset(CirrusVGAState * s)
 
     s->gr[0x31] &=
 	~(CIRRUS_BLT_START | CIRRUS_BLT_BUSY | CIRRUS_BLT_FIFOUSED);
+    need_update = s->cirrus_srcptr != &s->cirrus_bltbuf[0]
+        || s->cirrus_srcptr_end != &s->cirrus_bltbuf[0];
     s->cirrus_srcptr = &s->cirrus_bltbuf[0];
     s->cirrus_srcptr_end = &s->cirrus_bltbuf[0];
     s->cirrus_srccounter = 0;
+    if (!need_update)
+        return;
     cirrus_update_memory_access(s);
 }
 
 static int cirrus_bitblt_cputovideo(CirrusVGAState * s)
 {
     int w;
+
+    if (blit_is_unsafe(s)) {
+        return 0;
+    }
 
     s->cirrus_blt_mode &= ~CIRRUS_BLTMODE_MEMSYSSRC;
     s->cirrus_srcptr = &s->cirrus_bltbuf[0];
@@ -920,6 +925,10 @@ static int cirrus_bitblt_cputovideo(CirrusVGAState * s)
 	}
         s->cirrus_srccounter = s->cirrus_blt_srcpitch * s->cirrus_blt_height;
     }
+
+    /* the blit_is_unsafe call above should catch this */
+    assert(s->cirrus_blt_srcpitch <= CIRRUS_BLTBUFSIZE);
+
     s->cirrus_srcptr = s->cirrus_bltbuf;
     s->cirrus_srcptr_end = s->cirrus_bltbuf + s->cirrus_blt_srcpitch;
     cirrus_update_memory_access(s);
@@ -1382,7 +1391,6 @@ cirrus_hook_write_sr(CirrusVGAState * s, unsigned reg_index, int reg_value)
 	s->hw_cursor_y = (reg_value << 3) | (reg_index >> 5);
 	break;
     case 0x07:			// Extended Sequencer Mode
-        cirrus_update_memory_access(s);
     case 0x08:			// EEPROM Control
     case 0x09:			// Scratch Register 0
     case 0x0a:			// Scratch Register 1
@@ -1688,8 +1696,8 @@ cirrus_hook_read_cr(CirrusVGAState * s, unsigned reg_index, int *reg_value)
     default:
 #ifdef DEBUG_CIRRUS
 	printf("cirrus: inport cr_index %02x\n", reg_index);
-	*reg_value = 0xff;
 #endif
+	*reg_value = 0xff;
 	break;
     }
 
@@ -2101,7 +2109,7 @@ static uint32_t cirrus_vga_mem_readb(void *opaque, target_phys_addr_t addr)
     } else {
 	val = 0xff;
 #ifdef DEBUG_CIRRUS
-	printf("cirrus: mem_readb %06x\n", addr);
+	printf("cirrus: mem_readb %06lx\n", addr);
 #endif
     }
     return val;
@@ -2196,7 +2204,7 @@ static void cirrus_vga_mem_writeb(void *opaque, target_phys_addr_t addr,
 	}
     } else {
 #ifdef DEBUG_CIRRUS
-	printf("cirrus: mem_writeb %06x value %02x\n", addr, mem_value);
+	printf("cirrus: mem_writeb %06lx value %02x\n", addr, mem_value);
 #endif
     }
 }
@@ -2728,7 +2736,7 @@ static void cirrus_update_memory_access(CirrusVGAState *s)
 static uint32_t vga_ioport_read(void *opaque, uint32_t addr)
 {
     CirrusVGAState *s = opaque;
-    int val, index;
+    int val = 0xff, index;
 
     /* check port range access depending on color/monochrome mode */
     if ((addr >= 0x3b0 && addr <= 0x3bf && (s->msr & MSR_COLOR_EMULATION))

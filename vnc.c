@@ -187,7 +187,7 @@ static void dirty_set_segment(struct VncDirtyBuffer *dbuf, uint32_t y,
         b += 32 - (b & 31);
     }
 
-    while (e - b >= 32) {
+    while ((e > b) && (e - b >= 32)) {
         *word++ = 0xffffffff;
         b += 32;
     }
@@ -482,7 +482,7 @@ static void vnc_clean_surface(VncDisplay *vd, int data)
     /* if we are using the default allocator and buffer is allocated
      * free and allocate lazily
      */
-    if (data && (vd->ds->surface->flags & (QEMU_ALLOCATED_FLAG|QEMU_LAZY_FLAG|QEMU_REALPIXELS_FLAG))
+    if (data && (vd->ds->surface->flags & (QEMU_ALLOCATED_FLAG|QEMU_LAZY_FLAG))
         == (QEMU_ALLOCATED_FLAG|QEMU_LAZY_FLAG)) {
         qemu_free(vd->ds->surface->data);
         vd->ds->surface->data = NULL;
@@ -835,100 +835,6 @@ static void send_framebuffer_update(VncState *vs, int x, int y, int w, int h)
 	    vnc_framebuffer_update(vs, x, y, w, h, VNC_ENCODING_RAW);
 	    send_framebuffer_update_raw(vs, x, y, w, h);
 	    break;
-    }
-}
-
-static void vnc_copy(VncState *vs, int src_x, int src_y, int dst_x, int dst_y, int w, int h)
-{
-    /* send bitblit op to the vnc client */
-    vnc_write_u8(vs, 0);  /* msg id */
-    vnc_write_u8(vs, 0);
-    vnc_write_u16(vs, 1); /* number of rects */
-    vnc_framebuffer_update(vs, dst_x, dst_y, w, h, VNC_ENCODING_COPYRECT);
-    vnc_write_u16(vs, src_x);
-    vnc_write_u16(vs, src_y);
-    vnc_flush(vs);
-}
-
-static void vnc_dpy_copy(DisplayState *ds, int src_x, int src_y, int dst_x, int dst_y, int w, int h)
-{
-    VncDisplay *vd = ds->opaque;
-    VncState *vs, *vn;
-    uint8_t *src_row;
-    uint8_t *dst_row;
-    int i,x,y,pitch,depth,inc,w_lim,s;
-    int cmp_bytes;
-
-    if (!vd->server)
-        return;
-
-    vnc_refresh_server_surface(vd);
-    for (vs = vd->clients; vs != NULL; vs = vn) {
-        vn = vs->next;
-        if (vnc_has_feature(vs, VNC_FEATURE_COPYRECT)) {
-            if (!vs->need_update)
-                vs->need_update++;
-            vs->force_update = 1;
-            vnc_update_client(vs, 1);
-            /* vs might be free()ed here */
-        }
-    }
-
-    /* vd->server could be NULL now if the last client disconnected. */
-    if (!vd->server)
-        return;
-    
-    /* do bitblit op on the local surface too */
-    pitch = ds_get_linesize(vd->ds);
-    depth = ds_get_bytes_per_pixel(vd->ds);
-    src_row = vd->server->data + pitch * src_y + depth * src_x;
-    dst_row = vd->server->data + pitch * dst_y + depth * dst_x;
-    y = dst_y;
-    inc = 1;
-    if (dst_y > src_y) {
-        /* copy backwards */
-        src_row += pitch * (h-1);
-        dst_row += pitch * (h-1);
-        pitch = -pitch;
-        y = dst_y + h - 1;
-        inc = -1;
-    }
-    w_lim = w - (16 - (dst_x % 16));
-    if (w_lim < 0)
-        w_lim = w;
-    else
-        w_lim = w - (w_lim % 16);
-    for (i = 0; i < h; i++) {
-        for (x = 0; x <= w_lim;
-                x += s, src_row += cmp_bytes, dst_row += cmp_bytes) {
-            if (x == w_lim) {
-                if ((s = w - w_lim) == 0)
-                    break;
-            } else if (!x) {
-                s = (16 - (dst_x % 16));
-                s = MIN(s, w_lim);
-            } else {
-                s = 16;
-            }
-            cmp_bytes = s * depth;
-            if (memcmp(src_row, dst_row, cmp_bytes) == 0)
-                continue;
-            memmove(dst_row, src_row, cmp_bytes);
-            vs = vd->clients;
-            while (vs != NULL) {
-                if (!vnc_has_feature(vs, VNC_FEATURE_COPYRECT))
-                    dirty_set_bit(&vs->dirty, (x + dst_x) / 16, y);
-                vs = vs->next;
-            }
-        }
-        src_row += pitch - w * depth;
-        dst_row += pitch - w * depth;
-        y += inc;
-    }
-
-    for (vs = vd->clients; vs != NULL; vs = vs->next) {
-        if (vnc_has_feature(vs, VNC_FEATURE_COPYRECT))
-            vnc_copy(vs, src_x, src_y, dst_x, dst_y, w, h);
     }
 }
 
@@ -1914,10 +1820,16 @@ static int protocol_client_msg(VncState *vs, uint8_t *data, size_t len)
 	    return 8;
 
 	if (len == 8) {
-            uint32_t dlen = read_u32(data, 4);
-            if (dlen > 0)
-                return 8 + dlen;
-        }
+	    uint32_t dlen = read_u32(data, 4);
+	    if (dlen > (1 << 20)) {
+		fprintf(stderr, "vnc: client_cut_text msg payload has %u bytes"
+			      " which exceeds our limit of 1MB.\n", dlen);
+		vnc_client_error(vs);
+		break;
+	    }
+	    if (dlen > 0)
+		return 8 + dlen;
+	}
 
 	client_cut_text(vs, read_u32(data, 4), data + 8);
 	break;
@@ -2123,9 +2035,9 @@ static int vnc_tls_initialize(void)
     return 1;
 }
 
-static gnutls_anon_server_credentials vnc_tls_initialize_anon_cred(void)
+static gnutls_anon_server_credentials_t vnc_tls_initialize_anon_cred(void)
 {
-    gnutls_anon_server_credentials anon_cred;
+    gnutls_anon_server_credentials_t anon_cred;
     int ret;
 
     if ((ret = gnutls_anon_allocate_server_credentials(&anon_cred)) < 0) {
@@ -2349,13 +2261,52 @@ static void vnc_handshake_io(void *opaque) {
      (vs)->vd->subauth == VNC_AUTH_VENCRYPT_X509VNC ||    \
      (vs)->vd->subauth == VNC_AUTH_VENCRYPT_X509PLAIN)
 
+#if defined(GNUTLS_VERSION_NUMBER) && \
+    GNUTLS_VERSION_NUMBER >= 0x020200 /* 2.2.0 */
+static int vnc_set_gnutls_priority(gnutls_session_t s, int x509)
+{
+    const char *priority = x509 ? "NORMAL" : "NORMAL:+ANON-DH";
+    int rc;
+
+    rc = gnutls_priority_set_direct(s, priority, NULL);
+    if (rc != GNUTLS_E_SUCCESS) {
+        return -1;
+    }
+    return 0;
+}
+#else
+static int vnc_set_gnutls_priority(gnutls_session_t s, int x509)
+{
+    static const int cert_types[] = { GNUTLS_CRT_X509, 0 };
+    static const int protocols[] = {
+        GNUTLS_TLS1_1, GNUTLS_TLS1_0, GNUTLS_SSL3, 0
+    };
+    static const int kx_anon[] = { GNUTLS_KX_ANON_DH, 0 };
+    static const int kx_x509[] = {
+        GNUTLS_KX_DHE_DSS, GNUTLS_KX_RSA,
+        GNUTLS_KX_DHE_RSA, GNUTLS_KX_SRP, 0
+    };
+    int rc;
+
+    rc = gnutls_kx_set_priority(s, x509 ? kx_x509 : kx_anon);
+    if (rc != GNUTLS_E_SUCCESS) {
+        return -1;
+    }
+
+    rc = gnutls_certificate_type_set_priority(s, cert_types);
+    if (rc != GNUTLS_E_SUCCESS) {
+        return -1;
+    }
+
+    rc = gnutls_protocol_set_priority(s, protocols);
+    if (rc != GNUTLS_E_SUCCESS) {
+        return -1;
+    }
+    return 0;
+}
+#endif
 
 static int vnc_start_tls(struct VncState *vs) {
-    static const int cert_type_priority[] = { GNUTLS_CRT_X509, 0 };
-    static const int protocol_priority[]= { GNUTLS_TLS1_1, GNUTLS_TLS1_0, GNUTLS_SSL3, 0 };
-    static const int kx_anon[] = {GNUTLS_KX_ANON_DH, 0};
-    static const int kx_x509[] = {GNUTLS_KX_DHE_DSS, GNUTLS_KX_RSA, GNUTLS_KX_DHE_RSA, GNUTLS_KX_SRP, 0};
-
     VNC_DEBUG("Do TLS setup\n");
     if (vnc_tls_initialize() < 0) {
 	VNC_DEBUG("Failed to init TLS\n");
@@ -2375,21 +2326,7 @@ static int vnc_start_tls(struct VncState *vs) {
 	    return -1;
 	}
 
-	if (gnutls_kx_set_priority(vs->tls_session, NEED_X509_AUTH(vs) ? kx_x509 : kx_anon) < 0) {
-	    gnutls_deinit(vs->tls_session);
-	    vs->tls_session = NULL;
-	    vnc_client_error(vs);
-	    return -1;
-	}
-
-	if (gnutls_certificate_type_set_priority(vs->tls_session, cert_type_priority) < 0) {
-	    gnutls_deinit(vs->tls_session);
-	    vs->tls_session = NULL;
-	    vnc_client_error(vs);
-	    return -1;
-	}
-
-	if (gnutls_protocol_set_priority(vs->tls_session, protocol_priority) < 0) {
+	if (vnc_set_gnutls_priority(vs->tls_session, !!NEED_X509_AUTH(vs)) < 0) {
 	    gnutls_deinit(vs->tls_session);
 	    vs->tls_session = NULL;
 	    vnc_client_error(vs);
@@ -2417,7 +2354,7 @@ static int vnc_start_tls(struct VncState *vs) {
 	    }
 
 	} else {
-	    gnutls_anon_server_credentials anon_cred = vnc_tls_initialize_anon_cred();
+	    gnutls_anon_server_credentials_t anon_cred = vnc_tls_initialize_anon_cred();
 	    if (!anon_cred) {
 		gnutls_deinit(vs->tls_session);
 		vs->tls_session = NULL;
@@ -2828,7 +2765,6 @@ void vnc_display_init(DisplayState *ds)
     if (!vs->kbd_layout)
 	exit(1);
 
-    dcl->dpy_copy = vnc_dpy_copy;
     dcl->dpy_update = vnc_dpy_update;
     dcl->dpy_resize = vnc_dpy_resize;
     dcl->dpy_setdata = vnc_dpy_setdata;

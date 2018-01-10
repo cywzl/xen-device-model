@@ -29,6 +29,8 @@ ln -sf ${QEMU_ROOT:-..}/xen-config.mak $target/config.mak
 cat ${QEMU_ROOT:-.}/xen-config-host.mak >>config-host.mak
 
 sed -e 's,qemu,xen/qemu,' config-host.h >config-host.h.new
+echo "#define DEFAULT_NETWORK_SCRIPT      \"\"" >>config-host.h.new
+echo "#define DEFAULT_NETWORK_DOWN_SCRIPT \"\"" >>config-host.h.new
 echo '#include "xen-config-host.h"' >>config-host.h.new
 
 if test -f config-host.h~; then mv config-host.h~ config-host.h; fi

@@ -16,7 +16,7 @@ CFLAGS  += -D_LARGEFILE_SOURCE -D_LARGEFILE64_SOURCE
 LDFLAGS += $(shell getconf LFS_LDFLAGS)
 
 CFLAGS += -DNDEBUG
-CFLAGS ?= -O2 -fomit-frame-pointer
+CFLAGS += -O2 -fno-omit-frame-pointer
 
 # CFLAGS settings from xen.hg/tools/Rules.mk
 CFLAGS += -std=gnu99
@@ -25,5 +25,15 @@ CFLAGS += -Wstrict-prototypes
 CFLAGS += -Wno-unused-value
 CFLAGS += -m64
 CFLAGS += -Wdeclaration-after-statement
-CFLAGS += -D_LARGEFILE_SOURCE -D_LARGEFILE64_SOURCE
 
+# XenServer hacks
+# Override target output
+LIBEXEC := ${prefix}/libexec/xen/bin
+LIBEXEC_BIN := $(LIBEXEC)
+XEN_SCRIPT_DIR := /etc/xen/scripts
+
+# Don't build img utilities
+TOOLS :=
+
+# Don't link against blktap1
+CONFIG_BLKTAP1=n

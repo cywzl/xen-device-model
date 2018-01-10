@@ -440,6 +440,13 @@ static void pci_msix_writel(void *opaque, target_phys_addr_t addr, uint32_t val)
         return;
     }
 
+    if ( addr - msix->mmio_base_addr >= msix->total_entries * 16 )
+    {
+        PT_LOG("Error: Out of bounds write to MSI-X table,"
+               " addr %016"PRIx64"\n", addr);
+        return;
+    }
+
     entry_nr = (addr - msix->mmio_base_addr) / 16;
     entry = &msix->msix_entry[entry_nr];
     offset = ((addr - msix->mmio_base_addr) % 16) / 4;

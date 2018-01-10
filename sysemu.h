@@ -22,6 +22,8 @@ void vm_start(void);
 void vm_stop(int reason);
 
 int64_t cpu_get_ticks(void);
+void cpu_enable_ticks(void);
+void cpu_disable_ticks(void);
 
 void qemu_system_reset_request(void);
 void qemu_system_shutdown_request(void);
@@ -87,6 +89,7 @@ extern int cirrus_vga_enabled;
 extern int std_vga_enabled;
 extern int vmsvga_enabled;
 extern int vgpu_enabled;
+extern int xengt_vga_enabled;
 extern int gfx_passthru;
 extern int graphic_width;
 extern int graphic_height;

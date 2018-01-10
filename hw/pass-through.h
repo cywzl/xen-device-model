@@ -84,6 +84,12 @@
 #define PCI_MSI_FLAGS_MASK_BIT  0x0100
 #endif
 
+#ifndef PCI_MSI_MASK_32
+/* interrupt masking register */
+#define PCI_MSI_MASK_32     12
+#define PCI_MSI_MASK_64     16
+#endif
+
 #ifndef PCI_EXP_TYPE_PCIE_BRIDGE
 /* PCI/PCI-X to PCIE Bridge */
 #define PCI_EXP_TYPE_PCIE_BRIDGE 0x8
@@ -97,6 +103,14 @@
 #ifndef PCI_EXP_TYPE_ROOT_EC
 /* Root Complex Event Collector */
 #define PCI_EXP_TYPE_ROOT_EC     0xa
+#endif
+
+#ifndef PCI_VPD_ADDR
+/* Vital Product Data */
+#define PCI_VPD_ADDR		2	/* Address to access (15 bits!) */
+#define  PCI_VPD_ADDR_MASK	0x7fff	/* Address mask */
+#define  PCI_VPD_ADDR_F		0x8000	/* Write 0, 1 indicates completion */
+#define PCI_VPD_DATA		4	/* 32-bits of data returned here */
 #endif
 
 #ifndef PCI_ERR_UNCOR_MASK
@@ -158,10 +172,13 @@ enum {
 #define PT_MERGE_VALUE(value, data, val_mask) \
     (((value) & (val_mask)) | ((data) & ~(val_mask)))
 
+#define valid_addr(addr) \
+    (addr >= 0x80000000 && !(addr & 0xfff))
+
 struct pt_region {
     /* Virtual phys base & size */
-    uint32_t e_physbase;
-    uint32_t e_size;
+    uint64_t e_physbase;
+    uint64_t e_size;
     /* Index of region in qemu */
     uint32_t memory_index;
     /* BAR flag */
@@ -234,11 +251,14 @@ struct pt_dev {
     unsigned power_mgmt:1;
     struct pt_pm_info *pm_state;                /* PM virtualization */
     unsigned is_virtfn:1;
+    unsigned permissive:1;
+    unsigned permissive_warned:1;
 
     /* io port multiplexing */
 #define PCI_IOMUL_INVALID_FD    (-1)
     int fd;
     unsigned io_enable:1;
+    uint16_t cmd_enables;
 };
 
 static inline int pt_is_iomul(struct pt_dev *dev)
@@ -368,12 +388,12 @@ struct pt_reg_info_tbl {
     uint32_t size;
     /* reg initial value */
     uint32_t init_val;
+    /* reg reserved field mask (ON:reserved, OFF:defined) */
+    uint32_t res_mask;
     /* reg read only field mask (ON:RO/ROS, OFF:other) */
     uint32_t ro_mask;
     /* reg emulate field mask (ON:emu, OFF:passthrough) */
     uint32_t emu_mask;
-    /* no write back allowed */
-    uint32_t no_wb;
     /* emul reg initialize method */
     conf_reg_init init;
     union {

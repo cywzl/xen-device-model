@@ -504,14 +504,21 @@ static void set_begin_of_direntry(direntry_t* direntry, uint32_t begin)
 
 /* fat functions */
 
+static inline void fat_chksum_part(const char *name, size_t len, uint8_t *chksum)
+{
+    size_t i;
+
+    for(i = 0; i < len; i++)
+	*chksum = (((*chksum&0xfe) >> 1) | ((*chksum & 0x01) ? 0x80 : 0))
+	    + (unsigned char)name[i];
+}
+
 static inline uint8_t fat_chksum(const direntry_t* entry)
 {
     uint8_t chksum=0;
-    int i;
 
-    for(i=0;i<11;i++)
-	chksum=(((chksum&0xfe)>>1)|((chksum&0x01)?0x80:0))
-	    +(unsigned char)entry->name[i];
+    fat_chksum_part(entry->name, ARRAY_SIZE(entry->name), &chksum);
+    fat_chksum_part(entry->extension, ARRAY_SIZE(entry->extension), &chksum);
 
     return chksum;
 }

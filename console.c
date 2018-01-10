@@ -421,7 +421,8 @@ static void vga_putcharxy(DisplayState *ds, int x, int y, int ch,
 {
     uint8_t *d;
     const uint8_t *font_ptr;
-    unsigned int font_data, linesize, xorcol, bpp;
+    uint8_t font_data;
+    unsigned int linesize, xorcol, bpp;
     int i;
     unsigned int fgcol, bgcol;
 
@@ -1414,14 +1415,6 @@ void qemu_console_resize(DisplayState *ds, int width, int height)
     if (is_graphic_console()) {
         ds->surface = qemu_resize_displaysurface(ds, width, height);
         dpy_resize(ds);
-    }
-}
-
-void qemu_console_copy(DisplayState *ds, int src_x, int src_y,
-                int dst_x, int dst_y, int w, int h)
-{
-    if (is_graphic_console()) {
-        dpy_copy(ds, src_x, src_y, dst_x, dst_y, w, h);
     }
 }
 

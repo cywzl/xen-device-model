@@ -57,6 +57,7 @@ extern target_phys_addr_t pci_mem_base;
 #define PCI_VENDOR_ID_IBM                0x1014
 #define PCI_DEVICE_ID_IBM_OPENPIC2       0xffff
 
+#define PCI_VENDOR_ID_ATI                0x1002
 #define PCI_VENDOR_ID_AMD                0x1022
 #define PCI_DEVICE_ID_AMD_LANCE          0x2000
 
@@ -137,6 +138,7 @@ typedef int PCIUnregisterFunc(PCIDevice *pci_dev);
 
 #define PCI_ADDRESS_SPACE_MEM		0x00
 #define PCI_ADDRESS_SPACE_IO		0x01
+#define PCI_ADDRESS_SPACE_MEM_64BIT	0x04
 #define PCI_ADDRESS_SPACE_MEM_PREFETCH	0x08
 
 typedef struct PCIIORegion {
@@ -266,8 +268,8 @@ void pci_register_io_region(PCIDevice *pci_dev, int region_num,
                             uint32_t size, int type,
                             PCIMapIORegionFunc *map_func);
 
-int pt_chk_bar_overlap(PCIBus *bus, int devfn, uint32_t addr,
-                       uint32_t size, uint8_t type);
+int pt_chk_bar_overlap(PCIBus *bus, int devfn, uint64_t addr,
+                       uint64_t size, uint8_t type);
 
 uint32_t pci_default_read_config(PCIDevice *d,
                                  uint32_t address, int len);
@@ -390,6 +392,24 @@ int pt_init(PCIBus *e_bus);
 void pci_bridge_write_config(PCIDevice *d,
                              uint32_t address, uint32_t val, int len);
 PCIBus *pci_register_secondary_bus(PCIDevice *dev, pci_map_irq_fn map_irq);
+
+struct PCIBus {
+    int bus_num;
+    int devfn_min;
+    pci_set_irq_fn set_irq;
+    pci_map_irq_fn map_irq;
+    uint32_t config_reg; /* XXX: suppress */
+    /* low level pic */
+    SetIRQFunc *low_set_irq;
+    qemu_irq *irq_opaque;
+    PCIDevice *devices[256];
+    PCIDevice *parent_dev;
+    PCIBus *next;
+    /* The bus IRQ state is the logical OR of the connected devices.
+       Keep a count of the number of devices with raised IRQs.  */
+    int nirq;
+    int irq_count[];
+};
 
 
 #endif

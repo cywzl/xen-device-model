@@ -28,6 +28,8 @@
 #ifdef CONFIG_PASSTHROUGH
 #include "pass-through.h"
 #endif
+#include "vga-xengt.h"
+extern int xengt_vga_enabled;
 
 static void i440fx_set_irq(qemu_irq *pic, int irq_num, int level);
 static void piix3_write_config(PCIDevice *d, 
@@ -127,6 +129,8 @@ void i440fx_set_smm(PCIDevice *d, int val)
         smm_enabled = val;
         i440fx_update_memory_mappings(d);
     }
+
+    vgt_bridge_pci_write(dev, address, val, len);
 }
 
 
@@ -209,7 +213,12 @@ PCIBus *i440fx_init(PCIDevice **pi440fx_state, qemu_irq *pic)
     register_ioport_read(0xcfc, 4, 4, pci_host_data_readl, s);
 
 #ifdef CONFIG_PASSTHROUGH
-    d = pci_register_device(b, "i440FX", sizeof(PCIDevice), 0,
+
+    if (xengt_vga_enabled)
+	    d = pci_register_device(b, "i440FX", sizeof(PCIDevice), 0,
+                            vgt_bridge_pci_read, vgt_bridge_pci_write);
+    else
+	    d = pci_register_device(b, "i440FX", sizeof(PCIDevice), 0,
                             igd_pci_read, igd_pci_write);
 #else
     d = pci_register_device(b, "i440FX", sizeof(PCIDevice), 0,
@@ -225,6 +234,9 @@ PCIBus *i440fx_init(PCIDevice **pi440fx_state, qemu_irq *pic)
 #ifndef CONFIG_DM
     d->config[0x72] = 0x02; /* SMRAM */
 #endif /* !CONFIG_DM */
+    if (xengt_vga_enabled) {
+        vgt_bridge_pci_conf_init(d);
+    }
 
     register_savevm("I440FX", 0, 2, i440fx_save, i440fx_load, d);
     *pi440fx_state = d;

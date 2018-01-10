@@ -421,6 +421,11 @@ int virtqueue_pop(VirtQueue *vq, VirtQueueElement *elem)
     /* When we start there are none of either input nor output. */
     elem->out_num = elem->in_num = 0;
 
+    if (vq->inuse >= vq->vring.num) {
+        fprintf(stderr, "Virtqueue size exceeded");
+        exit(1);
+    }
+
     i = head = virtqueue_get_head(vq, vq->last_avail_idx++);
     do {
         struct iovec *sg;

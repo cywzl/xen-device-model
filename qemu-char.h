@@ -85,6 +85,12 @@ extern int term_escape_char;
 
 /* async I/O support */
 
+int qemu_set_fd_handler3(int fd,
+                         IOCanRWHandler *fd_read_poll,
+                         IOHandler *fd_read,
+                         IOHandler *fd_write,
+                         IOHandler *fd_exception,
+                         void *opaque);
 int qemu_set_fd_handler2(int fd,
                          IOCanRWHandler *fd_read_poll,
                          IOHandler *fd_read,

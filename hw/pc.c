@@ -36,6 +36,7 @@
 #include "qemu-xen.h"
 
 #include "xen_platform.h"
+#include "xen_pvdevice.h"
 #include "fw_cfg.h"
 #include "virtio-blk.h"
 #include "virtio-balloon.h"
@@ -45,6 +46,7 @@
 #ifdef CONFIG_PASSTHROUGH
 #include "pass-through.h"
 #endif
+#include "vga-xengt.h"
 
 /* output Bochs bios info messages */
 //#define DEBUG_BIOS
@@ -1029,6 +1031,8 @@ vga_bios_error:
         }
     } else if (vgpu_enabled) {
         vgpu_fb_init();
+    } else if (xengt_vga_enabled && pci_enabled) {
+        xengt_vga_init(pci_bus, vga_ram_addr, vga_ram_size);
     }
 
 #ifdef CONFIG_PASSTHROUGH
@@ -1181,6 +1185,12 @@ vga_bios_error:
         }
     }
 
+    if (pci_enabled) {
+        if (xenstore_get_xen_pvdevice_enabled()) {
+            xen_pvdevice_init(pci_bus, -1);
+        }
+    }
+
 #ifndef CONFIG_DM
     /* Add virtio block devices */
     if (pci_enabled) {
@@ -1205,8 +1215,6 @@ vga_bios_error:
         }
     }
 #endif
-
-    register_crashdump();
 }
 
 static void pc_init_pci(ram_addr_t ram_size, int vga_ram_size,

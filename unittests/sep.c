@@ -436,6 +436,9 @@ START_TEST(sep_check_paths)
     path_ok  ("/local/domain/0/backend/vbd3/123/5696/params", READ);
     path_fail("/local/domain/0/backend/vbd3/1234/5696/params", READ);
     path_fail("/local/domain/0/backend/vbd3/123/5696/params", WRITE);
+    path_ok  ("backend/vbd3/123/5696/params", READ);
+    path_fail("backend/vbd3/1234/5696/params", READ);
+    path_fail("backend/vbd3/123/5696/params", WRITE);
 
     path_ok  ("/local/domain/123/data/report_clipboard", READ);
     path_ok  ("/local/domain/123/data/report_clipboard", WRITE);
@@ -483,6 +486,15 @@ START_TEST(sep_check_paths)
     path_fail("/local/domain/0/backend/x/1234", READ);
     path_fail("/local/domain/0/backend/x/ 123", READ);
     path_fail("/local/domain/0/backend/x/123 ", READ);
+    path_fail("backend", READ);
+    path_fail("backend//123", READ);
+    path_fail("backend//12", READ);
+    path_fail("backend//1234", READ);
+    path_ok  ("backend/x/123", READ);
+    path_fail("backend/x/12", READ);
+    path_fail("backend/x/1234", READ);
+    path_fail("backend/x/ 123", READ);
+    path_fail("backend/x/123 ", READ);
 
     path_fail("/local/domain/17/keymap", READ);
     path_ok  ("/local/domain/123/keymap", READ);
@@ -521,6 +533,9 @@ START_TEST(sep_check_paths)
     path_ok  ("/local/domain/0/device-model/123/logdirty/ret", WRITE);
     path_ok  ("/local/domain/0/device-model/123/logdirty/cmd", WRITE);
     path_fail("/local/domain/0/device-model/123/a/b", WRITE);
+    path_ok  ("device-model/123/logdirty/ret", WRITE);
+    path_ok  ("device-model/123/logdirty/cmd", WRITE);
+    path_fail("device-model/123/a/b", WRITE);
 }
 END_TEST
 

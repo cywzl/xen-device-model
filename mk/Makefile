@@ -3,7 +3,7 @@ IMPORT_BRANDING := yes
 include $(B_BASE)/common.mk
 include $(B_BASE)/rpmbuild.mk
 
-REPO_NAME= qemu-xen-4.4
+REPO_NAME := $(shell echo "$$PWD" | awk -F/ '{print $$3}')
 RPM_BUILD_COOKIE= $(MY_OBJ_DIR)/.rpm_build_cookie
 REPO_STAMP = $(call git_req,$(REPO_NAME))
 REPO = $(call git_loc,$(REPO_NAME))

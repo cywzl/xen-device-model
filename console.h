@@ -69,7 +69,6 @@ void kbd_put_keysym(int keysym);
 #define GUI_REFRESH_INTERVAL 30
 #define QEMU_BIG_ENDIAN_FLAG    0x01
 #define QEMU_ALLOCATED_FLAG     0x02
-#define QEMU_REALPIXELS_FLAG    0x04
 #define QEMU_LAZY_FLAG    0x08
 
 struct PixelFormat {
@@ -100,8 +99,6 @@ struct DisplayChangeListener {
     void (*dpy_resize)(struct DisplayState *s);
     void (*dpy_setdata)(struct DisplayState *s);
     void (*dpy_refresh)(struct DisplayState *s);
-    void (*dpy_copy)(struct DisplayState *s, int src_x, int src_y,
-                     int dst_x, int dst_y, int w, int h);
     void (*dpy_fill)(struct DisplayState *s, int x, int y,
                      int w, int h, uint32_t c);
     void (*dpy_text_cursor)(struct DisplayState *s, int x, int y);
@@ -168,8 +165,7 @@ static inline int is_surface_bgr(DisplaySurface *surface)
 
 static inline int is_buffer_shared(DisplaySurface *surface)
 {
-    return (!(surface->flags & QEMU_ALLOCATED_FLAG) &&
-            !(surface->flags & QEMU_REALPIXELS_FLAG));
+    return (!(surface->flags & QEMU_ALLOCATED_FLAG));
 }
 
 static inline void register_displaychangelistener(DisplayState *ds, DisplayChangeListener *dcl)
@@ -210,18 +206,6 @@ static inline void dpy_refresh(DisplayState *s)
     struct DisplayChangeListener *dcl = s->listeners;
     while (dcl != NULL) {
         if (dcl->dpy_refresh) dcl->dpy_refresh(s);
-        dcl = dcl->next;
-    }
-}
-
-static inline void dpy_copy(struct DisplayState *s, int src_x, int src_y,
-                             int dst_x, int dst_y, int w, int h) {
-    struct DisplayChangeListener *dcl = s->listeners;
-    while (dcl != NULL) {
-        if (dcl->dpy_copy)
-            dcl->dpy_copy(s, src_x, src_y, dst_x, dst_y, w, h);
-        else /* TODO */
-            dcl->dpy_update(s, dst_x, dst_y, w, h);
         dcl = dcl->next;
     }
 }
@@ -313,14 +297,9 @@ void console_unselect(void);
 int is_console_selected(void);
 void console_color_init(DisplayState *ds);
 void qemu_console_resize(DisplayState *ds, int width, int height);
-void qemu_console_copy(DisplayState *ds, int src_x, int src_y,
-                int dst_x, int dst_y, int w, int h);
 
 /* sdl.c */
 void sdl_display_init(DisplayState *ds, int full_screen, int no_frame, int opengl_enabled);
-extern int grab_disabled;
-extern int display_width;
-extern int display_height;
 
 /* cocoa.m */
 void cocoa_display_init(DisplayState *ds, int full_screen);

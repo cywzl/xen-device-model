@@ -16,6 +16,34 @@ extern int igd_passthru;
 
 static uint32_t igd_guest_opregion = 0;
 
+static int wrapped_xc_domain_memory_mapping(
+    xc_interface *xch, uint32_t domid, unsigned long first_gfn,
+    unsigned long first_mfn, unsigned long nr_mfns, uint32_t add_mapping)
+{
+    int rc;
+
+    if ( add_mapping )
+    {
+        rc = xc_domain_iomem_permission(xch, domid, first_mfn, nr_mfns, add_mapping);
+        if ( rc )
+            return rc;
+    }
+
+    rc = xc_domain_memory_mapping(xch, domid, first_gfn, first_mfn, nr_mfns, add_mapping);
+
+    if ( !add_mapping )
+    {
+        rc = xc_domain_iomem_permission(xch, domid, first_mfn, nr_mfns, add_mapping);
+        if ( rc )
+            return rc;
+    }
+
+    return rc;
+}
+
+#define xc_domain_memory_mapping wrapped_xc_domain_memory_mapping
+
+
 static int pch_map_irq(PCIDevice *pci_dev, int irq_num)
 {
     PT_LOG("pch_map_irq called\n");
@@ -176,12 +204,26 @@ read_default:
    return pci_default_read_config(pci_dev, config_addr, len);
 }
 
+extern int register_amd_vf_region (struct pt_dev *real_device);
+extern int unregister_amd_vf_region(struct pt_dev *real_device);
+
 /*
  * register VGA resources for the domain with assigned gfx
  */
 int register_vga_regions(struct pt_dev *real_device)
 {
+    u32 vendor_id;
     int ret = 0;
+
+    vendor_id = real_device->pci_dev->vendor_id;
+        
+    PT_LOG ("vendor_id = 0x%04x, device_class = 0x%04x, virtfn = %d\n", vendor_id, real_device->pci_dev->device_class, real_device->is_virtfn);
+    if ((vendor_id == PCI_VENDOR_ID_ATI || vendor_id == PCI_VENDOR_ID_AMD) &&
+         real_device->pci_dev->device_class == 0x0300 &&
+         real_device->is_virtfn)
+    {
+	return register_amd_vf_region (real_device);
+    }
 
     return ret;
 }
@@ -198,6 +240,9 @@ int unregister_vga_regions(struct pt_dev *real_device)
         return ret;
 
     vendor_id = pt_pci_host_read(real_device->pci_dev, PCI_VENDOR_ID, 2);
+
+    PT_LOG ("vendor_id = 0x%04x, device_class = 0x%04x, virtfn = %d\n", vendor_id, real_device->pci_dev->device_class, real_device->is_virtfn);
+    
     if ( (vendor_id == PCI_VENDOR_ID_INTEL) && igd_guest_opregion )
     {
         ret |= xc_domain_memory_mapping(xc_handle, domid,
@@ -205,6 +250,13 @@ int unregister_vga_regions(struct pt_dev *real_device)
                 igd_guest_opregion >> XC_PAGE_SHIFT,
                 3,
                 DPCI_REMOVE_MAPPING);
+    }
+
+    if ((vendor_id == PCI_VENDOR_ID_ATI || vendor_id == PCI_VENDOR_ID_AMD) &&
+         real_device->pci_dev->device_class == 0x0300 &&
+         real_device->is_virtfn)
+    {
+	return unregister_amd_vf_region (real_device);
     }
 
     if ( ret != 0 )

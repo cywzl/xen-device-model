@@ -68,9 +68,11 @@ void xenstore_init(void);
 uint32_t xenstore_read_target(void);
 void xenstore_parse_domain_config(int domid);
 int xenstore_parse_disable_pf_config(void);
+uint64_t xenstore_parse_vgpu_address(void);
 struct pci_config_header;
 void xenstore_parse_pf_config(struct pci_config_header *pch);
 int xenstore_fd(void);
+int xenstore_get_xen_pvdevice_enabled(void);
 struct xs_handle *xenstore_get(void);
 void xenstore_process_event(void *opaque);
 void xenstore_record_dm_state(const char *state);
@@ -145,10 +147,5 @@ int has_tpm_device_danger(void);
 
 static inline void vga_dirty_log_start(void *s) { }
 static inline void vga_dirty_log_stop(void *s) { }
-
-/* crashdump.c */
-void provision_crashdump(const char *crashdump_dir, long long crashdump_quota);
-void register_crashdump(void);
-int crashdump_enabled(void);
 
 #endif /*QEMU_XEN_H*/

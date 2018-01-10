@@ -246,6 +246,10 @@ typedef void QEMUResetHandler(void *opaque);
 
 void qemu_register_reset(QEMUResetHandler *func, void *opaque);
 
+typedef void QEMUExitHandler(void *opaque);
+
+void qemu_register_exit(QEMUExitHandler *func, void *opaque);
+
 /* handler to set the boot_device for a specific type of QEMUMachine */
 /* return 0 if success */
 typedef int QEMUBootSetHandler(void *opaque, const char *boot_device);

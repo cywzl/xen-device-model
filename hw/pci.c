@@ -39,24 +39,6 @@ extern int igd_passthru;
 
 //#define DEBUG_PCI
 
-struct PCIBus {
-    int bus_num;
-    int devfn_min;
-    pci_set_irq_fn set_irq;
-    pci_map_irq_fn map_irq;
-    uint32_t config_reg; /* XXX: suppress */
-    /* low level pic */
-    SetIRQFunc *low_set_irq;
-    qemu_irq *irq_opaque;
-    PCIDevice *devices[256];
-    PCIDevice *parent_dev;
-    PCIBus *next;
-    /* The bus IRQ state is the logical OR of the connected devices.
-       Keep a count of the number of devices with raised IRQs.  */
-    int nirq;
-    int irq_count[];
-};
-
 static void pci_update_mappings(PCIDevice *d);
 static void pci_set_irq(void *opaque, int irq_num, int level);
 
@@ -248,9 +230,8 @@ PCIDevice *pci_register_device(PCIBus *bus, const char *name,
     if (devfn < 0) {
         for(devfn = bus->devfn_min ; devfn < 256; devfn += 8) {
 #ifdef CONFIG_PASSTHROUGH
-            /* reserve 00:02.0, because some BIOSs and drivers assume
-             * 00:02.0 for Intel IGD */
-            if ( gfx_passthru && devfn == 0x10 )
+            /* If vGT/XenGT is in use, reserve 00:02.* for the IGD */
+            if ((xengt_vga_enabled || gfx_passthru) && devfn == 0x10)
                 continue;
 #endif
             if ( !pci_devfn_in_use(bus, devfn) )
@@ -987,50 +968,3 @@ PCIBus *pci_isa_bridge_init(PCIBus *bus, int devfn, uint16_t vid, uint16_t did,
     return s;
 }
 
-int pt_chk_bar_overlap(PCIBus *bus, int devfn, uint32_t addr,
-                        uint32_t size, uint8_t type)
-{
-    PCIDevice *devices = NULL;
-    PCIIORegion *r;
-    int ret = 0;
-    int i, j;
-
-    /* check Overlapped to Base Address */
-    for (i=0; i<256; i++)
-    {
-        if ( !(devices = bus->devices[i]) )
-            continue;
-
-        /* skip itself */
-        if (devices->devfn == devfn)
-            continue;
-        
-        for (j=0; j<PCI_NUM_REGIONS; j++)
-        {
-            r = &devices->io_regions[j];
-
-            /* skip different resource type, but don't skip when
-             * prefetch and non-prefetch memory are compared.
-             */
-            if (type != r->type)
-            {
-                if (type == PCI_ADDRESS_SPACE_IO ||
-                    r->type == PCI_ADDRESS_SPACE_IO)
-                    continue;
-            }
-
-            if ((addr < (r->addr + r->size)) && ((addr + size) > r->addr))
-            {
-                printf("Overlapped to device[%02x:%02x.%x][Region:%d]"
-                    "[Address:%08xh][Size:%08xh]\n", bus->bus_num,
-                    (devices->devfn >> 3) & 0x1F, (devices->devfn & 0x7),
-                    j, r->addr, r->size);
-                ret = 1;
-                goto out;
-            }
-        }
-    }
-
-out:
-    return ret;
-}

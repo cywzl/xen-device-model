@@ -26,6 +26,7 @@
 #include "pc.h"
 #include "pci.h"
 #include "vga_int.h"
+#include "vga-xengt.h"
 
 #include <sys/mman.h>
 #include "sysemu.h"
@@ -33,6 +34,8 @@
 #include "exec-all.h"
 
 #include "qemu-timer.h"
+
+#include <assert.h>
 
 //#define DEBUG_VGA
 //#define DEBUG_VGA_MEM
@@ -158,8 +161,17 @@ static uint32_t expand4[256];
 static uint16_t expand2[256];
 static uint8_t expand4to8[16];
 
+static void vbe_update_vgaregs(VGAState *s);
+
+static inline bool vbe_enabled(VGAState *s)
+{
+    return s->vbe_regs[VBE_DISPI_INDEX_ENABLE] & VBE_DISPI_ENABLED;
+}
+
 static void vga_bios_init(VGAState *s);
 static void vga_screen_dump(void *opaque, const char *filename);
+void vga_map(PCIDevice *pci_dev, int region_num,
+                    uint32_t addr, uint32_t size, int type);
 
 static void vga_dumb_update_retrace_info(VGAState *s)
 {
@@ -442,6 +454,7 @@ static void vga_ioport_write(void *opaque, uint32_t addr, uint32_t val)
         printf("vga: write SR%x = 0x%02x\n", s->sr_index, val);
 #endif
         s->sr[s->sr_index] = val & sr_mask[s->sr_index];
+        vbe_update_vgaregs(s);
         if (s->sr_index == 1) s->update_retrace_info(s);
         break;
     case 0x3c7:
@@ -470,6 +483,7 @@ static void vga_ioport_write(void *opaque, uint32_t addr, uint32_t val)
         printf("vga: write GR%x = 0x%02x\n", s->gr_index, val);
 #endif
         s->gr[s->gr_index] = val & gr_mask[s->gr_index];
+        vbe_update_vgaregs(s);
         break;
     case 0x3b4:
     case 0x3d4:
@@ -483,8 +497,10 @@ static void vga_ioport_write(void *opaque, uint32_t addr, uint32_t val)
         /* handle CR0-7 protection */
         if ((s->cr[0x11] & 0x80) && s->cr_index <= 7) {
             /* can always write bit 4 of CR7 */
-            if (s->cr_index == 7)
+            if (s->cr_index == 7) {
                 s->cr[7] = (s->cr[7] & ~0x10) | (val & 0x10);
+                vbe_update_vgaregs(s);
+            }
             return;
         }
         switch(s->cr_index) {
@@ -500,6 +516,7 @@ static void vga_ioport_write(void *opaque, uint32_t addr, uint32_t val)
             s->cr[s->cr_index] = val;
             break;
         }
+        vbe_update_vgaregs(s);
 
         switch(s->cr_index) {
         case 0x00:
@@ -533,7 +550,7 @@ static void vbe_fixup_regs(VGAState *s)
     uint16_t *r = s->vbe_regs;
     uint32_t bits, linelength, maxy, offset;
 
-    if (!(r[VBE_DISPI_INDEX_ENABLE] & VBE_DISPI_ENABLED)) {
+    if (!vbe_enabled(s)) {
         /* vbe is turned off -- nothing to do */
         return;
     }
@@ -608,6 +625,46 @@ static void vbe_fixup_regs(VGAState *s)
     s->vbe_start_addr  = offset / 4;
 }
 
+/* we initialize the VGA graphic mode */
+static void vbe_update_vgaregs(VGAState *s)
+{
+    int h, shift_control;
+
+    if (!vbe_enabled(s)) {
+        /* vbe is turned off -- nothing to do */
+        return;
+    }
+
+    /* graphic mode + memory map 1 */
+    s->gr[0x06] = (s->gr[0x06] & ~0x0c) | 0x05;
+    s->cr[0x17] |= 3; /* no CGA modes */
+    s->cr[0x13] = s->vbe_line_offset >> 3;
+    /* width */
+    s->cr[0x01] = (s->vbe_regs[VBE_DISPI_INDEX_XRES] >> 3) - 1;
+    /* height (only meaningful if < 1024) */
+    h = s->vbe_regs[VBE_DISPI_INDEX_YRES] - 1;
+    s->cr[0x12] = h;
+    s->cr[0x07] = (s->cr[0x07] & ~0x42) |
+        ((h >> 7) & 0x02) | ((h >> 3) & 0x40);
+    /* line compare to 1023 */
+    s->cr[0x18] = 0xff;
+    s->cr[0x07] |= 0x10;
+    s->cr[0x09] |= 0x40;
+
+    if (s->vbe_regs[VBE_DISPI_INDEX_BPP] == 4) {
+        shift_control = 0;
+        s->sr[0x01] &= ~8; /* no double line */
+    } else {
+        shift_control = 2;
+        /* set chain 4 mode */
+        s->sr[4] |= 0x08;
+        /* activate all planes */
+        s->sr[2] |= 0x0f;
+    }
+    s->gr[0x05] = (s->gr[0x05] & ~0x60) | (shift_control << 5);
+    s->cr[0x09] &= ~0x9f; /* no double scan */
+}
+
 static uint32_t vbe_ioport_read_index(void *opaque, uint32_t addr)
 {
     VGAState *s = opaque;
@@ -642,7 +699,14 @@ static uint32_t vbe_ioport_read_data(void *opaque, uint32_t addr)
             val = s->vbe_regs[s->vbe_index];
         }
     } else {
-        val = 0;
+        switch (s->vbe_index) {
+            case VBE_DISPI_INDEX_LFB_ADDRESS_H:
+                val = VBE_DISPI_LFB_PHYSICAL_ADDRESS >> 16;
+                break;
+            default:
+                val = 0;
+                break;
+        }
     }
 #ifdef DEBUG_BOCHS_VBE
     printf("VBE: read index=0x%x val=0x%x\n", s->vbe_index, val);
@@ -682,61 +746,29 @@ static void vbe_ioport_write_data(void *opaque, uint32_t addr, uint32_t val)
         case VBE_DISPI_INDEX_Y_OFFSET:
             s->vbe_regs[s->vbe_index] = val;
             vbe_fixup_regs(s);
+            vbe_update_vgaregs(s);
             break;
         case VBE_DISPI_INDEX_BANK:
-            if (s->vbe_regs[VBE_DISPI_INDEX_BPP] == 4) {
-              val &= (s->vbe_bank_mask >> 2);
-            } else {
-              val &= s->vbe_bank_mask;
-            }
+            val &= s->vbe_bank_mask;
             s->vbe_regs[s->vbe_index] = val;
             s->bank_offset = (val << 16);
             break;
         case VBE_DISPI_INDEX_ENABLE:
             if ((val & VBE_DISPI_ENABLED) &&
                 !(s->vbe_regs[VBE_DISPI_INDEX_ENABLE] & VBE_DISPI_ENABLED)) {
-                int h, shift_control;
                 
                 s->vbe_regs[VBE_DISPI_INDEX_VIRT_WIDTH] = 0;
                 s->vbe_regs[VBE_DISPI_INDEX_X_OFFSET] = 0;
                 s->vbe_regs[VBE_DISPI_INDEX_Y_OFFSET] = 0;
-
                 s->vbe_regs[VBE_DISPI_INDEX_ENABLE] |= VBE_DISPI_ENABLED;
                 vbe_fixup_regs(s);
+                vbe_update_vgaregs(s);
 
                 /* clear the screen (should be done in BIOS) */
                 if (!(val & VBE_DISPI_NOCLEARMEM)) {
                     memset(s->vram_ptr, 0,
                            s->vbe_regs[VBE_DISPI_INDEX_YRES] * s->vbe_line_offset);
                 }
-
-                /* we initialize the VGA graphic mode (should be done
-                   in BIOS) */
-                s->gr[0x06] = (s->gr[0x06] & ~0x0c) | 0x05; /* graphic mode + memory map 1 */
-                s->cr[0x17] |= 3; /* no CGA modes */
-                s->cr[0x13] = s->vbe_line_offset >> 3;
-                /* width */
-                s->cr[0x01] = (s->vbe_regs[VBE_DISPI_INDEX_XRES] >> 3) - 1;
-                /* height (only meaningful if < 1024) */
-                h = s->vbe_regs[VBE_DISPI_INDEX_YRES] - 1;
-                s->cr[0x12] = h;
-                s->cr[0x07] = (s->cr[0x07] & ~0x42) |
-                    ((h >> 7) & 0x02) | ((h >> 3) & 0x40);
-                /* line compare to 1023 */
-                s->cr[0x18] = 0xff;
-                s->cr[0x07] |= 0x10;
-                s->cr[0x09] |= 0x40;
-
-                if (s->vbe_regs[VBE_DISPI_INDEX_BPP] == 4) {
-                    shift_control = 0;
-                    s->sr[0x01] &= ~8; /* no double line */
-                } else {
-                    shift_control = 2;
-                    s->sr[4] |= 0x08; /* set chain 4 mode */
-                    s->sr[2] |= 0x0f; /* activate all planes */
-                }
-                s->gr[0x05] = (s->gr[0x05] & ~0x60) | (shift_control << 5);
-                s->cr[0x09] &= ~0x9f; /* no double scan */
             } else {
                 /* XXX: the bios should do that */
                 s->bank_offset = 0;
@@ -784,13 +816,21 @@ uint32_t vga_mem_readb(void *opaque, target_phys_addr_t addr)
 
     if (s->sr[4] & 0x08) {
         /* chain 4 mode : simplest access */
+        assert(addr < s->vram_size);
         ret = s->vram_ptr[addr];
     } else if (s->gr[5] & 0x10) {
         /* odd/even mode (aka text mode mapping) */
         plane = (s->gr[4] & 2) | (addr & 1);
-        ret = s->vram_ptr[((addr & ~1) << 1) | plane];
+        addr = ((addr & ~1) << 1) | plane;
+        if (addr >= s->vram_size) {
+            return 0xff;
+        }
+        ret = s->vram_ptr[addr];
     } else {
         /* standard VGA latched access */
+        if (addr * sizeof(uint32_t) >= s->vram_size) {
+            return 0xff;
+        }
         s->latch = ((uint32_t *)s->vram_ptr)[addr];
 
         if (!(s->gr[5] & 0x08)) {
@@ -846,7 +886,7 @@ void vga_mem_writeb(void *opaque, target_phys_addr_t addr, uint32_t val)
     uint32_t write_mask, bit_mask, set_mask;
 
 #ifdef DEBUG_VGA_MEM
-    printf("vga: [0x%x] = 0x%02x\n", addr, val);
+    printf("vga: [0x%lx] = 0x%02x\n", addr, val);
 #endif
     /* convert to VGA memory offset */
     memory_map_mode = (s->gr[6] >> 2) & 3;
@@ -877,9 +917,10 @@ void vga_mem_writeb(void *opaque, target_phys_addr_t addr, uint32_t val)
         plane = addr & 3;
         mask = (1 << plane);
         if (s->sr[2] & mask) {
+            assert(addr < s->vram_size);
             s->vram_ptr[addr] = val;
 #ifdef DEBUG_VGA_MEM
-            printf("vga: chain4: [0x%x]\n", addr);
+            printf("vga: chain4: [0x%lx]\n", addr);
 #endif
             s->plane_updated |= mask; /* only used to detect font change */
             cpu_physical_memory_set_dirty(s->vram_offset + addr);
@@ -890,9 +931,12 @@ void vga_mem_writeb(void *opaque, target_phys_addr_t addr, uint32_t val)
         mask = (1 << plane);
         if (s->sr[2] & mask) {
             addr = ((addr & ~1) << 1) | plane;
+            if (addr >= s->vram_size) {
+                return;
+            }
             s->vram_ptr[addr] = val;
 #ifdef DEBUG_VGA_MEM
-            printf("vga: odd/even: [0x%x]\n", addr);
+            printf("vga: odd/even: [0x%lx]\n", addr);
 #endif
             s->plane_updated |= mask; /* only used to detect font change */
             cpu_physical_memory_set_dirty(s->vram_offset + addr);
@@ -962,11 +1006,14 @@ void vga_mem_writeb(void *opaque, target_phys_addr_t addr, uint32_t val)
         mask = s->sr[2];
         s->plane_updated |= mask; /* only used to detect font change */
         write_mask = mask16[mask];
+        if (addr * sizeof(uint32_t) >= s->vram_size) {
+            return;
+        }
         ((uint32_t *)s->vram_ptr)[addr] =
             (((uint32_t *)s->vram_ptr)[addr] & ~write_mask) |
             (val & write_mask);
 #ifdef DEBUG_VGA_MEM
-            printf("vga: latch: [0x%x] mask=0x%08x val=0x%08x\n",
+            printf("vga: latch: [0x%lx] mask=0x%08x val=0x%08x\n",
                    addr * 4, write_mask, val);
 #endif
             cpu_physical_memory_set_dirty(s->vram_offset + (addr << 2));
@@ -1149,7 +1196,7 @@ static void vga_get_offsets(VGAState *s,
 {
     uint32_t start_addr, line_offset, line_compare;
 #ifdef CONFIG_BOCHS_VBE
-    if (s->vbe_regs[VBE_DISPI_INDEX_ENABLE] & VBE_DISPI_ENABLED) {
+    if (vbe_enabled(s)) {
         line_offset = s->vbe_line_offset;
         start_addr = s->vbe_start_addr;
         line_compare = 65535;
@@ -1564,7 +1611,7 @@ static int vga_get_bpp(VGAState *s)
 {
     int ret;
 #ifdef CONFIG_BOCHS_VBE
-    if (s->vbe_regs[VBE_DISPI_INDEX_ENABLE] & VBE_DISPI_ENABLED) {
+    if (vbe_enabled(s)) {
         ret = s->vbe_regs[VBE_DISPI_INDEX_BPP];
     } else
 #endif
@@ -1579,7 +1626,7 @@ static void vga_get_resolution(VGAState *s, int *pwidth, int *pheight)
     int width, height;
 
 #ifdef CONFIG_BOCHS_VBE
-    if (s->vbe_regs[VBE_DISPI_INDEX_ENABLE] & VBE_DISPI_ENABLED) {
+    if (vbe_enabled(s)) {
         width = s->vbe_regs[VBE_DISPI_INDEX_XRES];
         height = s->vbe_regs[VBE_DISPI_INDEX_YRES];
     } else
@@ -1951,7 +1998,8 @@ static void vga_draw_blank(VGAState *s, int full_update)
 
 #define GMODE_TEXT     0
 #define GMODE_GRAPH    1
-#define GMODE_BLANK 2
+#define GMODE_BLANK    2
+#define GMODE_XENGT    4
 
 static void vga_update_display(void *opaque)
 {
@@ -1962,16 +2010,21 @@ static void vga_update_display(void *opaque)
         /* nothing to do */
     } else {
         full_update = 0;
-        if (!(s->ar_index & 0x20)) {
+        if (xengt_is_enabled())
+            graphic_mode = GMODE_XENGT;
+        else if (!(s->ar_index & 0x20))
             graphic_mode = GMODE_BLANK;
-        } else {
+        else
             graphic_mode = s->gr[6] & 1;
-        }
+
         if (graphic_mode != s->graphic_mode) {
             s->graphic_mode = graphic_mode;
             full_update = 1;
         }
         switch(graphic_mode) {
+        case GMODE_XENGT:
+            xengt_draw_primary(s->ds, full_update);
+            break;
         case GMODE_TEXT:
             vga_draw_text(s, full_update);
             break;
@@ -2420,7 +2473,7 @@ typedef struct PCIVGAState {
     VGAState vga_state;
 } PCIVGAState;
 
-static void vga_map(PCIDevice *pci_dev, int region_num,
+void vga_map(PCIDevice *pci_dev, int region_num,
                     uint32_t addr, uint32_t size, int type)
 {
     PCIVGAState *d = (PCIVGAState *)pci_dev;
@@ -2730,6 +2783,11 @@ static void vga_init(VGAState *s)
 
 #ifdef CONFIG_BOCHS_VBE
     s->vbe_regs[VBE_DISPI_INDEX_ID] = VBE_DISPI_ID0;
+    s->vbe_regs[VBE_DISPI_INDEX_LFB_ADDRESS_H] = VRAM_RESERVED_ADDRESS >> 16;
+    s->vbe_regs[VBE_DISPI_INDEX_LFB_ADDRESS_L] = VRAM_RESERVED_ADDRESS & 0xFFFF;
+    s->vbe_regs[VBE_DISPI_INDEX_VIDEO_MEMORY_64K] = s->vram_size >> 16;
+    s->lfb_addr = VRAM_RESERVED_ADDRESS;
+    s->lfb_end = VRAM_RESERVED_ADDRESS + s->vram_size;
     s->vbe_bank_mask = ((s->vram_size >> 16) - 1);
 #if defined (TARGET_I386)
     register_ioport_read(0x1ce, 1, 2, vbe_ioport_read_index, s);

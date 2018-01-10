@@ -34,6 +34,8 @@ ifdef CONFIG_WIN32
 LIBS+=-lwinmm -lws2_32 -liphlpapi
 endif
 
+LIBS+=-ldrm -ldrm_intel
+
 all: $(TOOLS) $(DOCS) recurse-all
 
 SUBDIR_RULES=$(patsubst %,subdir-%, $(TARGET_DIRS))
@@ -46,9 +48,9 @@ $(filter %-user,$(SUBDIR_RULES)): libqemu_user.a
 
 recurse-all: $(SUBDIR_RULES)
 
-CPPFLAGS += -I$(XEN_ROOT)/tools/libxc
+CPPFLAGS += -I$(XEN_ROOT)/tools/libxc/include
 CPPFLAGS += -I$(XEN_ROOT)/tools/blktap/lib
-CPPFLAGS += -I$(XEN_ROOT)/tools/xenstore
+CPPFLAGS += -I$(XEN_ROOT)/tools/xenstore/include
 CPPFLAGS += -I$(XEN_ROOT)/tools/include
 
 tapdisk-ioemu: tapdisk-ioemu.c cutils.c block.c block-raw.c block-cow.c block-qcow.c aes.c block-vmdk.c block-cloop.c block-dmg.c block-bochs.c block-vpc.c block-vvfat.c block-qcow2.c hw/xen_blktap.c osdep.c
@@ -146,7 +148,7 @@ AUDIO_OBJS+= wavcapture.o
 OBJS+=$(addprefix audio/, $(AUDIO_OBJS))
 
 ifdef CONFIG_SDL
-OBJS+=sdl.o sdl_zoom.o x_keymap.o
+OBJS+=sdl.o x_keymap.o
 endif
 ifdef CONFIG_CURSES
 OBJS+=curses.o
@@ -169,9 +171,7 @@ LIBS+=$(VDE_LIBS)
 
 cocoa.o: cocoa.m
 
-sdl_zoom.o: sdl_zoom.c sdl_zoom.h
-
-sdl.o: sdl.c keymaps.c sdl_keysym.h sdl_zoom.h
+sdl.o: sdl.c keymaps.c sdl_keysym.h
 
 sdl.o audio/sdlaudio.o: CFLAGS += $(SDL_CFLAGS)
 
