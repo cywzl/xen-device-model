@@ -5960,6 +5960,7 @@ int main(int argc, char **argv, char **envp)
                     cocoa_display_init(ds, full_screen);
 #endif
 
+
 #ifdef CONFIG_SPICE
     if (spice_used)
         qemu_spice_init();
