@@ -5935,11 +5935,11 @@ int main(int argc, char **argv, char **envp)
 #endif
             {
                 if (vnc_display != NULL || vncunused != 0) {
-		    int vnc_display_port;
-		    char password[20];
+		            int vnc_display_port;
+		            char password[20];
                     vnc_display_init(ds);
-		    xenstore_read_vncpasswd(domid, password, sizeof(password));
-		    vnc_display_password(ds, password);
+		            xenstore_read_vncpasswd(domid, password, sizeof(password));
+		            vnc_display_password(ds, password);
                     if (vncunused) {
                         char *display = malloc(strlen(vnc_display) + 10);
                         snprintf(display, strlen(vnc_display) + 10, "%s,to=99999", vnc_display);
@@ -5948,9 +5948,9 @@ int main(int argc, char **argv, char **envp)
                         free(display);
                     } else
                         vnc_display_port = vnc_display_open(ds, vnc_display);
-		    if (vnc_display_port < 0)
+		            if (vnc_display_port < 0)
                         exit(1);
-		    xenstore_write_vncport(vnc_display_port);
+		            xenstore_write_vncport(vnc_display_port);
                 }
 #if defined(CONFIG_SDL)
                 if (sdl || !vnc_display)
@@ -5959,7 +5959,6 @@ int main(int argc, char **argv, char **envp)
                 if (sdl || !vnc_display)
                     cocoa_display_init(ds, full_screen);
 #endif
-
 
 #ifdef CONFIG_SPICE
     if (spice_used)
