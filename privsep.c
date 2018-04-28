@@ -1306,16 +1306,17 @@ privsep_prepare(void)
 void
 init_privsep(void)
 {
-    struct passwd *pw;
-    struct group *gr;
-    uid_t qemu_uid;
-    gid_t qemu_gid;
+    //struct passwd *pw;
+    //struct group *gr;
+    //uid_t qemu_uid;
+    //gid_t qemu_gid;
 
     if (privsep_fd < 0 || privsep_state != privsep_prepared)
         err(1, "privilege separation not prepared");
     if (priv_xsh != NULL)
         err(1, "privilege separation not initialized properly");
 
+    /* chenyw: open /dev/urandom permission
     pw = getpwnam("qemu_base");
     if (!pw)
         err(1, "cannot get qemu user id");
@@ -1325,7 +1326,7 @@ init_privsep(void)
     if (!gr)
         err(1, "cannot get qemu group id");
     qemu_gid = gr->gr_gid + (unsigned short)domid;
-
+    */
     struct sigaction sigterm_handler, sigxfsz_handler;
     memset (&sigterm_handler, 0, sizeof(struct sigaction));
     memset (&sigxfsz_handler, 0, sizeof(struct sigaction));
@@ -1336,6 +1337,7 @@ init_privsep(void)
     if (unshare(CLONE_NEWNET))
         err(1, "unshare()");
 
+    /* chenyw: restore the permission to open /dev/urandom and don't chdir
     if (chdir(root_directory) < 0
         || chroot(root_directory) < 0
         || chdir("/") < 0)
@@ -1347,7 +1349,7 @@ init_privsep(void)
         err(1, "setgid()");
     if (setuid(qemu_uid) < 0)
         err(1, "setuid()");
-
+    */
     /* qemu core dumps are often useful; make sure they're allowed. */
     prctl(PR_SET_DUMPABLE, 1, 0, 0, 0);
 
@@ -2063,8 +2065,6 @@ xc_interface_restrict_qemu(xc_interface *xc_handle, int domid)
         return -1;
     return p(xc_handle, domid);
 }
-
-
 
 int
 xc_evtchn_restrict(xenevtchn_handle *xce_handle, int domid)
