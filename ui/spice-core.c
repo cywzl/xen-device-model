@@ -589,6 +589,10 @@ void qemu_spice_init(void)
 
     // skylark
     //qemu_opt_foreach(opts, add_channel, NULL, 0);
+#if SPICE_SERVER_VERSION >= 0x000a02 /* 0.10.2 */
+    spice_server_set_name(spice_server, qemu_name);
+    spice_server_set_uuid(spice_server, qemu_uuid);
+#endif
 
     spice_server_init(spice_server, &core_interface);
     using_spice = 1;

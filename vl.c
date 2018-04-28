@@ -405,7 +405,7 @@ static ioport_data_t *get_ioport_alloc(int address)
 }
 
 
-static uint32_t ioport_read(int index, uint16_t address)
+static uint32_t ioport_read(int index, uint32_t address)
 {
     const ioport_data_t *port = get_ioport(address);
 #ifdef OLD_IOPORT
@@ -427,7 +427,7 @@ static uint32_t ioport_read(int index, uint16_t address)
 #endif
 }
 
-static void ioport_write(int index, uint16_t address, uint32_t data)
+static void ioport_write(int index, uint32_t address, uint32_t data)
 {
     const ioport_data_t *port = get_ioport(address);
 #ifdef OLD_IOPORT
@@ -5280,7 +5280,7 @@ int main(int argc, char **argv, char **envp)
 		    char *host = NULL;
 
 		    memset(spice_opt, '\0', sizeof(spice_opt));
-		    //strcpy(sopt, optarg);
+		    strcpy(spice_opt, optarg);
 		    if (get_param_value(buf, sizeof(buf), "port", spice_opt)) {
 		       port = strtol(buf, NULL, 0); 
 		    }
@@ -5367,16 +5367,17 @@ int main(int argc, char **argv, char **envp)
 		    int num = 0;
 		    int ram = 0;
 
-		    //strcpy(qopt, optarg);
+		    strcpy(qxl_opt, optarg);
 		    if (get_param_value(buf, sizeof(buf), "num", qxl_opt)) {
 		       num = strtol(buf, NULL, 0); 
 		    }
 		    if (get_param_value(buf, sizeof(buf), "ram", qxl_opt)) {
 		       ram = strtol(buf, NULL, 0); 
 		    }
-		    qxl_num = num;
+		    qxl_num = num; //chenyw: no need
 		    qxl_ram = ram;
 		    select_vgahw("qxl");
+			vga_ram_size = qxl_ram * 1024 * 1024;
 		    // fprintf(stderr, "qxl_num=%d, qxl_ram=%d\n", qxl_num, qxl_ram);
 		}
 		break;
@@ -5947,6 +5948,7 @@ int main(int argc, char **argv, char **envp)
                         char *display = malloc(strlen(vnc_display) + 10);
                         snprintf(display, strlen(vnc_display) + 10, "%s,to=99999", vnc_display);
                         vnc_display_port = vnc_display_open(ds, display);
+						spice_port = vnc_display_port + 1; //chenyw: spice port
                         free(display);
                     } else
                         vnc_display_port = vnc_display_open(ds, vnc_display);
@@ -5961,6 +5963,7 @@ int main(int argc, char **argv, char **envp)
                 if (sdl || !vnc_display)
                     cocoa_display_init(ds, full_screen);
 #endif
+
 
 #ifdef CONFIG_SPICE
                 if (using_spice && !qxl_enabled) 
